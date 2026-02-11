@@ -1,0 +1,25 @@
+/target
+**/*.rs.bk
+*.pdb
+*.exe
+*.dll
+*.exp
+*.lib
+*.ilk
+
+# IDE
+.vs/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+nul
+NUL
+
+# Build artifacts
+*.msi

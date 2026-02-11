@@ -1,0 +1,17 @@
+[package]
+name = "snip-ocr"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ns-common = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+windows = { workspace = true, features = [
+    "Media_Ocr",
+    "Graphics_Imaging",
+    "Foundation",
+    "Storage_Streams",
+] }
+windows-core = { workspace = true }

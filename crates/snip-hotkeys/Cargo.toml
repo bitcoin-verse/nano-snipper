@@ -1,0 +1,16 @@
+[package]
+name = "snip-hotkeys"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ns-common = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+windows-core = { workspace = true }

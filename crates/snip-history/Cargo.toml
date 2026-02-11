@@ -1,0 +1,16 @@
+[package]
+name = "snip-history"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ns-common = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled"] }
+image = { workspace = true }
+uuid = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
+serde_json = { workspace = true }

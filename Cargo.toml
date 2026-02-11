@@ -1,0 +1,53 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ns-common",
+    "crates/snipd",
+    "crates/snip-capture",
+    "crates/snip-overlay",
+    "crates/snip-clipboard",
+    "crates/snip-hotkeys",
+    "crates/snip-ui",
+    "crates/snip-history",
+    "crates/snip-ocr",
+    "crates/snip-ipc",
+    "crates/snip-annotate",
+    "crates/snipui",
+    "crates/snip-bench",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+# Shared across workspace
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v7", "serde"] }
+parking_lot = "0.12"
+dirs = "6"
+tokio = { version = "1", features = ["full"] }
+image = "0.25"
+
+# Windows APIs
+windows = "0.62"
+windows-core = "0.62"
+
+# Internal crates
+ns-common = { path = "crates/ns-common" }
+snip-capture = { path = "crates/snip-capture" }
+snip-overlay = { path = "crates/snip-overlay" }
+snip-clipboard = { path = "crates/snip-clipboard" }
+snip-hotkeys = { path = "crates/snip-hotkeys" }
+snip-ui = { path = "crates/snip-ui" }
+snip-history = { path = "crates/snip-history" }
+snip-ocr = { path = "crates/snip-ocr" }
+snip-ipc = { path = "crates/snip-ipc" }
+snip-annotate = { path = "crates/snip-annotate" }

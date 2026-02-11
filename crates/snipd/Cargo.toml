@@ -1,0 +1,40 @@
+[package]
+name = "snipd"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ns-common = { workspace = true }
+snip-capture = { workspace = true }
+snip-overlay = { workspace = true }
+snip-clipboard = { workspace = true }
+snip-hotkeys = { workspace = true }
+snip-ui = { workspace = true }
+snip-history = { workspace = true }
+snip-ipc = { workspace = true }
+snip-annotate = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true }
+tray-icon = "0.19"
+image = { workspace = true }
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_Security",
+    "Win32_System_Registry",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_LibraryLoader",
+    "Win32_System_DataExchange",
+    "Win32_System_Ole",
+    "Win32_System_Com",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+] }
+windows-core = { workspace = true }
+
+[build-dependencies]
+winresource = "0.1"
