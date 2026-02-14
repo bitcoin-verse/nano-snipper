@@ -1702,8 +1702,8 @@ impl AnnotationEditor {
                                 cb(None);
                                 return LRESULT(0);
                             }
-                        } else if vk == VK_RETURN.0 && shift {
-                            // Shift+Enter → Done (save)
+                        } else if vk == VK_RETURN.0 {
+                            // Enter → Done (save)
                             if let Some(cb) = state.callback.take() {
                                 let layer = state.layer.clone();
                                 let _ = ShowWindow(hwnd, SW_HIDE);
