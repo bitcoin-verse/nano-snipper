@@ -156,15 +156,22 @@ crates/
   snipui/            Settings & history GUI (iced)
 ```
 
-## Building
+## Installation
 
-### Prerequisites
+### Installer (recommended)
+
+Download and run `NanoSnipperSetup.exe`. It installs to Program Files, creates Start Menu shortcuts, and optionally adds a desktop shortcut. Uninstall from Add/Remove Programs — your captures are preserved.
+
+### Build from source
+
+#### Prerequisites
 
 - Rust (stable toolchain)
 - MSVC Build Tools with Windows SDK
 - Windows 11 (or Windows 10 1803+)
+- [Inno Setup 6](https://jrsoftware.org/isinfo.php) (optional, for building the installer)
 
-### Build
+#### Build
 
 ```bash
 # Debug
@@ -176,7 +183,15 @@ cargo build --workspace --release
 
 Release binaries land in `target/release/`.
 
-### Run
+#### Build installer
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1
+```
+
+Outputs `installer/Output/NanoSnipperSetup.exe`.
+
+#### Run
 
 ```bash
 # Start the daemon (sits in system tray)
@@ -186,7 +201,7 @@ target\release\nanosnipper.exe
 target\release\snipui.exe
 ```
 
-### Running benchmarks
+#### Running benchmarks
 
 ```bash
 # Startup timing (standalone, exits after measuring)
