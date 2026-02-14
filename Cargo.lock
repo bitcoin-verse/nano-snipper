@@ -2316,6 +2316,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanosnipper"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "image 0.25.9",
+ "ns-common",
+ "parking_lot 0.12.5",
+ "snip-annotate",
+ "snip-capture",
+ "snip-clipboard",
+ "snip-history",
+ "snip-hotkeys",
+ "snip-ipc",
+ "snip-overlay",
+ "snip-ui",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "tray-icon",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+ "winresource",
+]
+
+[[package]]
 name = "ndk"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3887,31 +3912,6 @@ dependencies = [
  "windows 0.62.2",
  "windows-core 0.62.2",
  "windows-numerics",
-]
-
-[[package]]
-name = "snipd"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "image 0.25.9",
- "ns-common",
- "parking_lot 0.12.5",
- "snip-annotate",
- "snip-capture",
- "snip-clipboard",
- "snip-history",
- "snip-hotkeys",
- "snip-ipc",
- "snip-overlay",
- "snip-ui",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "tray-icon",
- "windows 0.62.2",
- "windows-core 0.62.2",
- "winresource",
 ]
 
 [[package]]

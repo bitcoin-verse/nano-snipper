@@ -1,11 +1,11 @@
-//! IPC client wrapper for snipui → snipd communication.
+//! IPC client wrapper for snipui → nanosnipper communication.
 
 use anyhow::Result;
 use ns_common::config::NsConfig;
 use ns_common::history::HistoryEntry;
 use ns_common::ipc::IpcMessage;
 
-/// Request config from snipd.
+/// Request config from nanosnipper.
 pub async fn get_config() -> Result<NsConfig> {
     let response = snip_ipc::IpcClient::send(&IpcMessage::GetConfig).await?;
     match response {
@@ -15,7 +15,7 @@ pub async fn get_config() -> Result<NsConfig> {
     }
 }
 
-/// Send updated config to snipd.
+/// Send updated config to nanosnipper.
 pub async fn set_config(config: NsConfig) -> Result<()> {
     let response = snip_ipc::IpcClient::send(&IpcMessage::SetConfig(config)).await?;
     match response {

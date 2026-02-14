@@ -44,7 +44,7 @@ impl State {
     }
 
     /// Update state from a message. Returns `true` if the config was modified
-    /// and should be persisted to snipd via IPC.
+    /// and should be persisted to nanosnipper via IPC.
     pub fn update(&mut self, msg: Message, config: &mut NsConfig) -> bool {
         match msg {
             Message::AutoCopyTimeoutChanged(v) => {

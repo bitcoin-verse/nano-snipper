@@ -1,6 +1,6 @@
 //! snipui — Nano Snipper Settings & History UI.
 //!
-//! Built with iced. Connects to snipd via named pipe IPC.
+//! Built with iced. Connects to nanosnipper via named pipe IPC.
 
 #![windows_subsystem = "windows"]
 

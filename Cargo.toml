@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
     "crates/ns-common",
-    "crates/snipd",
+    "crates/nanosnipper",
     "crates/snip-capture",
     "crates/snip-overlay",
     "crates/snip-clipboard",

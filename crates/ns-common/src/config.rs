@@ -92,7 +92,7 @@ impl Default for RetentionConfig {
 pub struct BehaviorConfig {
     /// Auto-copy to clipboard after this many seconds (0 = disabled).
     pub auto_copy_timeout_secs: u32,
-    /// Start snipd on Windows login.
+    /// Start nanosnipper on Windows login.
     pub start_on_login: bool,
 }
 

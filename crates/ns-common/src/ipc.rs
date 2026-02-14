@@ -3,14 +3,14 @@ use crate::history::HistoryEntry;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Messages exchanged between snipd and snipui over named pipes.
+/// Messages exchanged between nanosnipper and snipui over named pipes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload")]
 pub enum IpcMessage {
-    // --- snipui → snipd ---
+    // --- snipui → nanosnipper ---
     /// Request the current config.
     GetConfig,
-    /// Update config (snipd should reload).
+    /// Update config (nanosnipper should reload).
     SetConfig(NsConfig),
     /// Request history page.
     GetHistory {
@@ -20,12 +20,12 @@ pub enum IpcMessage {
     },
     /// Delete a history entry.
     DeleteEntry(Uuid),
-    /// Request snipd to trigger a capture.
+    /// Request nanosnipper to trigger a capture.
     TriggerCapture(crate::CaptureMode),
     /// Pause/resume hotkeys.
     SetPaused(bool),
 
-    // --- snipd → snipui ---
+    // --- nanosnipper → snipui ---
     /// Config data response.
     ConfigData(NsConfig),
     /// History page response.

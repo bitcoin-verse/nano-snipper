@@ -61,7 +61,7 @@ impl NsApp {
             history_state: pages::history::State::new(),
         };
 
-        // Try to load config from snipd via IPC on startup
+        // Try to load config from nanosnipper via IPC on startup
         let load_config = Task::perform(
             async { ipc_client::get_config().await },
             |result| match result {
@@ -214,7 +214,7 @@ impl NsApp {
             }
 
             Message::ConfigSaved => {
-                tracing::info!("Config saved to snipd");
+                tracing::info!("Config saved to nanosnipper");
                 Task::none()
             }
 

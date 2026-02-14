@@ -1,4 +1,4 @@
-//! snipd — Nano Snipper daemon.
+//! nanosnipper — Nano Snipper daemon.
 //!
 //! Runs as a system tray application, always in the background.
 //! Handles hotkeys, capture pipeline, clipboard, overlay, action bar, and IPC.
@@ -71,8 +71,8 @@ fn main() {
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let log_file = std::fs::File::create(log_dir.join("snipd.log"))
-        .expect("Failed to create snipd.log");
+    let log_file = std::fs::File::create(log_dir.join("nanosnipper.log"))
+        .expect("Failed to create nanosnipper.log");
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -86,7 +86,7 @@ fn main() {
 
     let benchmark_startup = std::env::args().any(|a| a == "--benchmark-startup");
 
-    info!("snipd starting");
+    info!("nanosnipper starting");
 
     if benchmark_startup {
         if let Err(e) = run_startup_benchmark(startup_t0) {
@@ -278,7 +278,7 @@ fn run() -> Result<()> {
         history.cleanup_async();
     }
 
-    info!("snipd ready — entering message loop");
+    info!("nanosnipper ready — entering message loop");
 
     unsafe {
         let mut msg = MSG::default();
@@ -288,7 +288,7 @@ fn run() -> Result<()> {
         }
     }
 
-    info!("snipd shutting down");
+    info!("nanosnipper shutting down");
     Ok(())
 }
 
@@ -297,7 +297,7 @@ fn ensure_single_instance() -> Result<HANDLE> {
     let handle = unsafe { CreateMutexW(None, false, name)? };
     let last_error = unsafe { GetLastError() };
     if last_error == ERROR_ALREADY_EXISTS {
-        anyhow::bail!("Another instance of snipd is already running");
+        anyhow::bail!("Another instance of nanosnipper is already running");
     }
     Ok(handle)
 }

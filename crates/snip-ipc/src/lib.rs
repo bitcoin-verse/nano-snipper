@@ -7,7 +7,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeServer, ServerOptions};
 use tracing::{debug, info, warn};
 
-/// Server side (snipd): listens for connections from snipui.
+/// Server side (nanosnipper): listens for connections from snipui.
 pub struct IpcServer {
     _private: (),
 }
@@ -87,13 +87,13 @@ impl IpcServer {
     }
 }
 
-/// Client side (snipui): connects to snipd.
+/// Client side (snipui): connects to nanosnipper.
 pub struct IpcClient {
     _private: (),
 }
 
 impl IpcClient {
-    /// Send a message to snipd and wait for a response.
+    /// Send a message to nanosnipper and wait for a response.
     pub async fn send(msg: &IpcMessage) -> Result<IpcMessage> {
         let mut pipe = ClientOptions::new().open(PIPE_NAME)?;
 

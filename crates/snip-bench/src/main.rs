@@ -325,7 +325,7 @@ fn get_process_memory_mb(process_name: &str) -> Option<f64> {
 // ─── Benchmark runners ───────────────────────────────────────────────────────
 
 fn bench_nano_snipper_fullscreen(args: &Args) -> Result<BenchmarkResult> {
-    let process_name = "snipd.exe";
+    let process_name = "nanosnipper.exe";
 
     println!("Benchmarking Nano Snipper (fullscreen) — {} runs, {}s delay",
         args.runs, args.delay_secs);
@@ -335,7 +335,7 @@ fn bench_nano_snipper_fullscreen(args: &Args) -> Result<BenchmarkResult> {
     if let Some(mb) = memory_idle {
         println!("  Idle memory: {:.1} MB", mb);
     } else {
-        println!("  Warning: Could not find snipd.exe process. Is it running?");
+        println!("  Warning: Could not find nanosnipper.exe process. Is it running?");
     }
 
     let mut clipboard_times: Vec<f64> = Vec::new();

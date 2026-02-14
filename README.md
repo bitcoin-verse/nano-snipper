@@ -9,7 +9,7 @@ A fast screenshot tool for Windows, built in Rust.
 ```bash
 cargo build --workspace --release
 ```
-2. Run `target\release\snipd.exe` — appears in the system tray
+2. Run `target\release\nanosnipper.exe` — appears in the system tray
 
 3. Press `Ctrl+Shift+1` to capture a region, or `Ctrl+Shift+2` for fullscreen
 
@@ -134,7 +134,7 @@ Total cold start: **~130 ms** (D3D11 device + overlay + editor + history DB, par
 Three binaries, 13 crates.
 
 ```
-snipd.exe       Daemon — Win32 message loop, DXGI capture, Direct2D overlay + editor, system tray
+nanosnipper.exe Daemon — Win32 message loop, DXGI capture, Direct2D overlay + editor, system tray
 snipui.exe      Settings & history UI — iced 0.13 (tiny-skia CPU renderer)
 snip-bench.exe  Benchmark harness — SendInput, clipboard polling, memory profiling
 ```
@@ -142,7 +142,7 @@ snip-bench.exe  Benchmark harness — SendInput, clipboard polling, memory profi
 ```
 crates/
   ns-common/         Shared types — config, IPC protocol, history model, paths
-  snipd/             Daemon binary — message loop, state machine, tray
+  nanosnipper/       Daemon binary — message loop, state machine, tray
   snip-capture/      DXGI Output Duplication, D3D11 GPU crop, texture caching
   snip-overlay/      Fullscreen transparent overlay (Win32 + Direct2D)
   snip-clipboard/    CF_DIBV5 clipboard, delayed rendering
@@ -180,7 +180,7 @@ Release binaries land in `target/release/`.
 
 ```bash
 # Start the daemon (sits in system tray)
-target\release\snipd.exe
+target\release\nanosnipper.exe
 
 # Open settings / history UI
 target\release\snipui.exe
@@ -190,9 +190,9 @@ target\release\snipui.exe
 
 ```bash
 # Startup timing (standalone, exits after measuring)
-snipd.exe --benchmark-startup
+nanosnipper.exe --benchmark-startup
 
-# Nano Snipper fullscreen (requires snipd running)
+# Nano Snipper fullscreen (requires nanosnipper running)
 snip-bench.exe --tool nano-snipper --mode fullscreen --runs 10 --json
 
 # Windows Snipping Tool comparison

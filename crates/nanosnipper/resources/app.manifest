@@ -3,7 +3,7 @@
   <assemblyIdentity
     version="0.1.0.0"
     processorArchitecture="*"
-    name="NanoSnipper.snipd"
+    name="NanoSnipper.nanosnipper"
     type="win32"
   />
   <description>Nano Snipper Daemon</description>

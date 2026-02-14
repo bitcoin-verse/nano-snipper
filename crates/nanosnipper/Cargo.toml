@@ -1,5 +1,5 @@
 [package]
-name = "snipd"
+name = "nanosnipper"
 version.workspace = true
 edition.workspace = true
 
