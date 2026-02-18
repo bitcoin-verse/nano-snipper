@@ -3,6 +3,12 @@
 use ns_common::PixelBuffer;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use windows::core::*;
+use windows::Win32::Graphics::Direct2D::Common::*;
+use windows::Win32::Graphics::Direct2D::*;
+use windows::Win32::Graphics::DirectWrite::*;
+use windows::Win32::Graphics::Imaging::*;
+use windows::Win32::System::Com::*;
 
 /// Color in RGBA.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -101,6 +107,107 @@ pub enum Annotation {
         color: Color,
         thickness: f32,
     },
+    /// Emoji stamp.
+    Emoji {
+        position: Point,
+        emoji: String,
+        size: f32,
+    },
+}
+
+impl Annotation {
+    /// Axis-aligned bounding box: (min_x, min_y, max_x, max_y).
+    pub fn bounding_box(&self) -> (f32, f32, f32, f32) {
+        match self {
+            Annotation::Arrow { start, end, thickness, .. } => {
+                let pad = *thickness * 2.5; // account for arrowhead
+                let min_x = start.x.min(end.x) - pad;
+                let min_y = start.y.min(end.y) - pad;
+                let max_x = start.x.max(end.x) + pad;
+                let max_y = start.y.max(end.y) + pad;
+                (min_x, min_y, max_x, max_y)
+            }
+            Annotation::Rectangle { x, y, width, height, thickness, .. } => {
+                let pad = *thickness;
+                (x - pad, y - pad, x + width + pad, y + height + pad)
+            }
+            Annotation::Highlight { x, y, width, height, .. } => {
+                (*x, *y, x + width, y + height)
+            }
+            Annotation::Blur { x, y, width, height, .. } => {
+                (*x, *y, x + width, y + height)
+            }
+            Annotation::Text { position, font_size, text, .. } => {
+                let approx_w = text.len() as f32 * font_size * 0.6;
+                (position.x, position.y, position.x + approx_w, position.y + font_size)
+            }
+            Annotation::Pen { points, thickness, .. } => {
+                if points.is_empty() {
+                    return (0.0, 0.0, 0.0, 0.0);
+                }
+                let pad = *thickness;
+                let mut min_x = f32::MAX;
+                let mut min_y = f32::MAX;
+                let mut max_x = f32::MIN;
+                let mut max_y = f32::MIN;
+                for p in points {
+                    min_x = min_x.min(p.x);
+                    min_y = min_y.min(p.y);
+                    max_x = max_x.max(p.x);
+                    max_y = max_y.max(p.y);
+                }
+                (min_x - pad, min_y - pad, max_x + pad, max_y + pad)
+            }
+            Annotation::Emoji { position, size, .. } => {
+                (position.x, position.y, position.x + size * 1.5, position.y + size * 1.5)
+            }
+        }
+    }
+
+    /// Shift all coordinates by (dx, dy).
+    pub fn offset_by(&mut self, dx: f32, dy: f32) {
+        match self {
+            Annotation::Arrow { start, end, .. } => {
+                start.x += dx; start.y += dy;
+                end.x += dx; end.y += dy;
+            }
+            Annotation::Rectangle { x, y, .. } => {
+                *x += dx; *y += dy;
+            }
+            Annotation::Highlight { x, y, .. } => {
+                *x += dx; *y += dy;
+            }
+            Annotation::Blur { x, y, .. } => {
+                *x += dx; *y += dy;
+            }
+            Annotation::Text { position, .. } => {
+                position.x += dx; position.y += dy;
+            }
+            Annotation::Pen { points, .. } => {
+                for p in points.iter_mut() {
+                    p.x += dx; p.y += dy;
+                }
+            }
+            Annotation::Emoji { position, .. } => {
+                position.x += dx; position.y += dy;
+            }
+        }
+    }
+
+    /// Point-in-bounding-box hit test.
+    pub fn hit_test_point(&self, px: f32, py: f32) -> bool {
+        let (min_x, min_y, max_x, max_y) = self.bounding_box();
+        px >= min_x && px <= max_x && py >= min_y && py <= max_y
+    }
+}
+
+/// An undo-able action in the annotation editor.
+#[derive(Debug, Clone)]
+pub enum UndoAction {
+    /// An annotation was added (stores the annotation for removal on undo).
+    Add(Annotation),
+    /// An annotation was moved: index, total dx, total dy.
+    Move { index: usize, dx: f32, dy: f32 },
 }
 
 /// Collection of annotations on a single screenshot.
@@ -142,6 +249,7 @@ pub enum AnnotationTool {
     Blur,
     Text,
     Pen,
+    Emoji,
 }
 
 // ─── CPU annotation rendering ────────────────────────────────────────────────
@@ -266,6 +374,137 @@ fn render_annotation(data: &mut [u8], buf_w: u32, buf_h: u32, stride: u32, ann: 
             font_size,
         } => {
             draw_text_simple(data, buf_w, buf_h, stride, position.x, position.y, text, color, *font_size);
+        }
+
+        Annotation::Emoji {
+            position,
+            emoji,
+            size,
+        } => {
+            render_emoji_dwrite(data, buf_w, buf_h, stride, position.x, position.y, emoji, *size);
+        }
+    }
+}
+
+/// Render an emoji string to the pixel buffer using DirectWrite + D2D offscreen WIC bitmap.
+fn render_emoji_dwrite(
+    data: &mut [u8], buf_w: u32, buf_h: u32, stride: u32,
+    x: f32, y: f32, emoji: &str, size: f32,
+) {
+    unsafe {
+        // Tile size for the offscreen render (generous padding)
+        let tile = (size * 1.5).ceil() as u32;
+        if tile == 0 { return; }
+
+        // Initialize COM (ignore if already initialized)
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+
+        // Create WIC factory
+        let wic: IWICImagingFactory = match CoCreateInstance(
+            &CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER,
+        ) {
+            Ok(f) => f,
+            Err(_) => return,
+        };
+
+        // Create WIC bitmap (32bpp BGRA premultiplied)
+        let wic_bmp = match wic.CreateBitmap(
+            tile, tile,
+            &GUID_WICPixelFormat32bppPBGRA,
+            WICBitmapCacheOnDemand,
+        ) {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+
+        // Create D2D factory
+        let d2d: ID2D1Factory = match D2D1CreateFactory(
+            D2D1_FACTORY_TYPE_SINGLE_THREADED, None,
+        ) {
+            Ok(f) => f,
+            Err(_) => return,
+        };
+
+        // Create WIC bitmap render target
+        let rt_props = D2D1_RENDER_TARGET_PROPERTIES {
+            r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            pixelFormat: D2D1_PIXEL_FORMAT {
+                format: windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
+                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+            },
+            dpiX: 96.0,
+            dpiY: 96.0,
+            ..Default::default()
+        };
+        let rt = match d2d.CreateWicBitmapRenderTarget(&wic_bmp, &rt_props) {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+
+        // Create DirectWrite factory and text format
+        let dwrite: IDWriteFactory = match DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) {
+            Ok(f) => f,
+            Err(_) => return,
+        };
+        let fmt = match dwrite.CreateTextFormat(
+            w!("Segoe UI Emoji"), None,
+            DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL, size, w!("en-US"),
+        ) {
+            Ok(f) => f,
+            Err(_) => return,
+        };
+
+        // Render emoji to WIC bitmap
+        let wide: Vec<u16> = emoji.encode_utf16().collect();
+        rt.BeginDraw();
+        rt.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
+        if let Ok(brush) = rt.CreateSolidColorBrush(
+            &D2D1_COLOR_F { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }, None,
+        ) {
+            let rect = D2D_RECT_F { left: 0.0, top: 0.0, right: tile as f32, bottom: tile as f32 };
+            rt.DrawText(
+                &wide, &fmt, &rect, &brush,
+                D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+        }
+        if rt.EndDraw(None, None).is_err() { return; }
+
+        // Lock WIC bitmap and read pixels
+        let lock = match wic_bmp.Lock(std::ptr::null(), WICBitmapLockRead.0 as u32) {
+            Ok(l) => l,
+            Err(_) => return,
+        };
+        let wic_stride = match lock.GetStride() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let mut wic_size = 0u32;
+        let mut wic_ptr: *mut u8 = std::ptr::null_mut();
+        if lock.GetDataPointer(&mut wic_size, &mut wic_ptr).is_err() { return; }
+        if wic_ptr.is_null() { return; }
+
+        // Alpha-blend each pixel from the WIC bitmap onto the output buffer
+        let dst_x = x as i32;
+        let dst_y = y as i32;
+        for row in 0..tile as i32 {
+            let py = dst_y + row;
+            if py < 0 || py >= buf_h as i32 { continue; }
+            for col in 0..tile as i32 {
+                let px = dst_x + col;
+                if px < 0 || px >= buf_w as i32 { continue; }
+
+                let src_off = (row as u32 * wic_stride + col as u32 * 4) as usize;
+                if src_off + 3 >= wic_size as usize { continue; }
+                let sb = *wic_ptr.add(src_off);
+                let sg = *wic_ptr.add(src_off + 1);
+                let sr = *wic_ptr.add(src_off + 2);
+                let sa = *wic_ptr.add(src_off + 3);
+                if sa == 0 { continue; }
+
+                blend_pixel(data, stride, px as u32, py as u32, sb, sg, sr, sa);
+            }
         }
     }
 }

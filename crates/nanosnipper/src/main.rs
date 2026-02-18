@@ -595,6 +595,9 @@ fn do_fullscreen_capture(state: &Mutex<AppState>) {
         (pixels_for_annotate, editor_hwnd, main_hwnd, pixels_for_history, capture_mode, capture_region, capture_w, capture_h, history_arc)
     };
 
+    // Immediate clipboard: user can paste the original capture right away
+    copy_to_clipboard(main_hwnd, &pixels_for_annotate);
+
     // Show annotation editor WITHOUT holding the AppState lock
     let pixels_for_bake = pixels_for_annotate.clone();
     let main_hwnd_raw = main_hwnd.0 as isize;
@@ -602,7 +605,7 @@ fn do_fullscreen_capture(state: &Mutex<AppState>) {
         let cb_hwnd = HWND(main_hwnd_raw as *mut std::ffi::c_void);
         match result {
             Some(layer) if !layer.is_empty() => {
-                info!("Annotation complete: {} annotations — baking into image", layer.annotations.len());
+                info!("Annotation complete: {} annotations — baking + saving final image", layer.annotations.len());
                 let final_pixels = snip_annotate::render_annotations(&pixels_for_bake, &layer);
                 save_and_copy(cb_hwnd, &final_pixels);
             }
@@ -614,9 +617,20 @@ fn do_fullscreen_capture(state: &Mutex<AppState>) {
         }
     });
 
+    // Live clipboard updates: re-bake and copy on each annotation change
+    let on_change: snip_ui::EditorOnChange = Box::new(move |pixels, layer| {
+        let cb_hwnd = HWND(main_hwnd_raw as *mut std::ffi::c_void);
+        if layer.is_empty() {
+            copy_to_clipboard(cb_hwnd, pixels);
+        } else {
+            let baked = snip_annotate::render_annotations(pixels, layer);
+            copy_to_clipboard(cb_hwnd, &baked);
+        }
+    });
+
     if let Some(hwnd) = editor_hwnd {
         let editor = snip_ui::AnnotationEditor::from_hwnd(hwnd);
-        if let Err(e) = editor.show(&pixels_for_annotate, callback) {
+        if let Err(e) = editor.show(&pixels_for_annotate, callback, Some(on_change)) {
             error!("Failed to show annotation editor: {e}");
         }
     } else {
@@ -732,6 +746,9 @@ fn handle_region_selected(
         (pixels_for_annotate, editor_hwnd, main_hwnd, pixels_for_history, capture_mode, capture_region, capture_w, capture_h, history_arc)
     };
 
+    // Immediate clipboard: user can paste the original capture right away
+    copy_to_clipboard(main_hwnd, &pixels_for_annotate);
+
     // Show annotation editor WITHOUT holding the AppState lock
     let pixels_for_bake = pixels_for_annotate.clone();
     let main_hwnd_raw = main_hwnd.0 as isize;
@@ -739,7 +756,7 @@ fn handle_region_selected(
         let cb_hwnd = HWND(main_hwnd_raw as *mut std::ffi::c_void);
         match result {
             Some(layer) if !layer.is_empty() => {
-                info!("Annotation complete: {} annotations — baking into image", layer.annotations.len());
+                info!("Annotation complete: {} annotations — baking + saving final image", layer.annotations.len());
                 let final_pixels = snip_annotate::render_annotations(&pixels_for_bake, &layer);
                 save_and_copy(cb_hwnd, &final_pixels);
             }
@@ -751,9 +768,20 @@ fn handle_region_selected(
         }
     });
 
+    // Live clipboard updates: re-bake and copy on each annotation change
+    let on_change: snip_ui::EditorOnChange = Box::new(move |pixels, layer| {
+        let cb_hwnd = HWND(main_hwnd_raw as *mut std::ffi::c_void);
+        if layer.is_empty() {
+            copy_to_clipboard(cb_hwnd, pixels);
+        } else {
+            let baked = snip_annotate::render_annotations(pixels, layer);
+            copy_to_clipboard(cb_hwnd, &baked);
+        }
+    });
+
     if let Some(hwnd) = editor_hwnd {
         let editor = snip_ui::AnnotationEditor::from_hwnd(hwnd);
-        if let Err(e) = editor.show(&pixels_for_annotate, callback) {
+        if let Err(e) = editor.show(&pixels_for_annotate, callback, Some(on_change)) {
             error!("Failed to show annotation editor: {e}");
         }
     } else {
@@ -776,6 +804,14 @@ fn handle_region_selected(
 
 /// Save image to disk and copy both image + path to clipboard.
 /// Clipboard is set FIRST (fast, 3-8ms), then PNG is saved on a background thread.
+/// Update clipboard with an image (no disk save, no text).
+/// Used for live clipboard updates during annotation.
+fn copy_to_clipboard(hwnd: HWND, pixels: &ns_common::PixelBuffer) {
+    if let Err(e) = snip_clipboard::set_image(hwnd, pixels) {
+        error!("Failed to update clipboard: {e}");
+    }
+}
+
 fn save_and_copy(hwnd: HWND, pixels: &ns_common::PixelBuffer) {
     let path = generate_save_path();
     let path_str = path.display().to_string();

@@ -7,7 +7,7 @@
 
 use anyhow::Result;
 use ns_common::PixelBuffer;
-use snip_annotate::{Annotation, AnnotationLayer, AnnotationTool, Color, Point};
+use snip_annotate::{Annotation, AnnotationLayer, AnnotationTool, Color, Point, UndoAction};
 use tracing::info;
 use windows::core::*;
 use windows::Win32::Foundation::*;
@@ -40,8 +40,24 @@ const THICKNESS_PRESETS: [f32; 3] = [2.0, 5.0, 10.0];
 
 const MARGIN_X: f32 = 12.0;
 
+// Emoji palette for the emoji stamp tool
+const EMOJI_PALETTE: &[&str] = &[
+    "👍", "❤️", "😀", "😂", "🤔", "😱", "🎉", "⭐",
+    "🔥", "✅", "❌", "⚠️", "💡", "🐛", "📌", "👀",
+];
+
+// Minimum window dimensions so the toolbar is never clipped.
+// Row 1: MARGIN_X + 7 tools*48 + 2 + SEP + 2 undo/redo*48 + 2 + SEP + 2 done/cancel*48 + MARGIN_X
+const MIN_CLIENT_W: i32 = 590;
+const MIN_CLIENT_H: i32 = TOOLBAR_HEIGHT as i32 + 120;
+
 /// Callback when annotation editor is done.
 pub type EditorCallback = Box<dyn FnOnce(Option<AnnotationLayer>) + 'static>;
+
+/// Callback fired after each annotation mutation (draw, undo, redo, text commit).
+/// Receives the original pixels and the current annotation layer so the caller
+/// can bake and update the clipboard in real time.
+pub type EditorOnChange = Box<dyn Fn(&PixelBuffer, &AnnotationLayer) + 'static>;
 
 // ─── Toolbar hit testing ─────────────────────────────────────────────────────
 
@@ -55,6 +71,7 @@ enum ToolbarHit {
     Cancel,
     Color(usize),
     Thickness(usize),
+    Emoji(usize),
 }
 
 // ─── Cached D2D brushes (created once, reused every frame) ───────────────────
@@ -152,12 +169,19 @@ struct EditorState {
 
     // Annotation state
     layer: AnnotationLayer,
-    redo_stack: Vec<Annotation>,
+    undo_stack: Vec<UndoAction>,
+    redo_stack: Vec<UndoAction>,
     tool: AnnotationTool,
     drawing: bool,
     draw_start: Point,
     draw_current: Point,
     pen_points: Vec<Point>,
+
+    // Right-click move selection
+    selected_index: Option<usize>,
+    dragging_selected: bool,
+    drag_start_img: Point,
+    drag_last_img: Point,
 
     // Text editing
     text_editing: bool,
@@ -170,6 +194,7 @@ struct EditorState {
     thickness: f32,
     color_index: usize,
     thickness_index: usize,
+    emoji_index: usize,
 
     // Toolbar hover
     hovered_btn: i32, // row 1 button index, -1 if none
@@ -177,8 +202,14 @@ struct EditorState {
     // Cached stroke style for round-capped pen lines
     pen_stroke_style: Option<ID2D1StrokeStyle>,
 
-    // Callback
+    // Canvas transform: maps image-space to screen-space
+    canvas_scale: f32,
+    canvas_offset_x: f32,
+    canvas_offset_y: f32,
+
+    // Callbacks
     callback: Option<EditorCallback>,
+    on_change: Option<EditorOnChange>,
 }
 
 pub struct AnnotationEditor {
@@ -217,12 +248,17 @@ impl AnnotationEditor {
             _img_width: 0,
             _img_height: 0,
             layer: AnnotationLayer::new(),
+            undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             tool: AnnotationTool::Arrow,
             drawing: false,
             draw_start: Point { x: 0.0, y: 0.0 },
             draw_current: Point { x: 0.0, y: 0.0 },
             pen_points: Vec::new(),
+            selected_index: None,
+            dragging_selected: false,
+            drag_start_img: Point { x: 0.0, y: 0.0 },
+            drag_last_img: Point { x: 0.0, y: 0.0 },
             text_editing: false,
             text_position: Point { x: 0.0, y: 0.0 },
             text_buffer: String::new(),
@@ -231,9 +267,14 @@ impl AnnotationEditor {
             thickness: THICKNESS_PRESETS[1],
             color_index: 2,
             thickness_index: 1,
+            emoji_index: 0,
             hovered_btn: -1,
             pen_stroke_style: None,
+            canvas_scale: 1.0,
+            canvas_offset_x: 0.0,
+            canvas_offset_y: 0.0,
             callback: None,
+            on_change: None,
         });
 
         let hwnd = unsafe {
@@ -276,16 +317,21 @@ impl AnnotationEditor {
     /// Legacy API: create and immediately show. Used when no persistent editor exists.
     pub fn new(pixels: &PixelBuffer, callback: EditorCallback) -> Result<Self> {
         let editor = Self::create_hidden()?;
-        editor.show(pixels, callback)?;
+        editor.show(pixels, callback, None)?;
         Ok(editor)
     }
 
     /// Show the persistent editor with a new screenshot. Resets all annotation state.
-    pub fn show(&self, pixels: &PixelBuffer, callback: EditorCallback) -> Result<()> {
+    pub fn show(
+        &self,
+        pixels: &PixelBuffer,
+        callback: EditorCallback,
+        on_change: Option<EditorOnChange>,
+    ) -> Result<()> {
         let screen_w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
         let screen_h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
-        let w = (pixels.width as i32).min(screen_w - 100);
-        let h = (pixels.height as i32 + TOOLBAR_HEIGHT as i32).min(screen_h - 100);
+        let w = (pixels.width as i32).max(MIN_CLIENT_W).min(screen_w - 100);
+        let h = (pixels.height as i32 + TOOLBAR_HEIGHT as i32).max(MIN_CLIENT_H).min(screen_h - 100);
 
         // Resize and center window
         unsafe {
@@ -308,10 +354,13 @@ impl AnnotationEditor {
 
                 // Reset annotation state
                 state.layer = AnnotationLayer::new();
+                state.undo_stack.clear();
                 state.redo_stack.clear();
                 state.tool = AnnotationTool::Arrow;
                 state.drawing = false;
                 state.pen_points.clear();
+                state.selected_index = None;
+                state.dragging_selected = false;
                 state.text_editing = false;
                 state.text_buffer.clear();
                 state.hovered_btn = -1;
@@ -319,6 +368,7 @@ impl AnnotationEditor {
                 state._img_width = pixels.width;
                 state._img_height = pixels.height;
                 state.callback = Some(callback);
+                state.on_change = on_change;
 
                 // Reset color/thickness to defaults
                 state.color_index = 2;
@@ -326,8 +376,9 @@ impl AnnotationEditor {
                 state.highlight_color = Color::YELLOW_OPAQUE.as_highlight();
                 state.thickness_index = 1;
                 state.thickness = THICKNESS_PRESETS[1];
+                state.emoji_index = 0;
 
-                // Resize render target
+                // Resize render target and recompute canvas transform
                 if let Some(rt) = &state.render_target {
                     let mut rect = RECT::default();
                     GetClientRect(self.hwnd, &mut rect).ok();
@@ -352,6 +403,13 @@ impl AnnotationEditor {
                         &props,
                     ).ok();
                 }
+
+                // Recompute canvas transform (outside rt borrow)
+                let mut rect = RECT::default();
+                GetClientRect(self.hwnd, &mut rect).ok();
+                let cw = (rect.right - rect.left).max(1) as f32;
+                let ch = (rect.bottom - rect.top).max(1) as f32;
+                Self::recompute_canvas_transform(state, cw, ch);
             }
         }
 
@@ -375,6 +433,26 @@ impl AnnotationEditor {
         Self { hwnd }
     }
 
+    /// Recompute canvas transform so the image fits the window at correct aspect ratio.
+    fn recompute_canvas_transform(state: &mut EditorState, client_w: f32, client_h: f32) {
+        let canvas_w = client_w;
+        let canvas_h = client_h - TOOLBAR_HEIGHT;
+        if state._img_width == 0 || state._img_height == 0 || canvas_w <= 0.0 || canvas_h <= 0.0 {
+            state.canvas_scale = 1.0;
+            state.canvas_offset_x = 0.0;
+            state.canvas_offset_y = 0.0;
+            return;
+        }
+        let scale_x = canvas_w / state._img_width as f32;
+        let scale_y = canvas_h / state._img_height as f32;
+        let scale = scale_x.min(scale_y);
+        let drawn_w = state._img_width as f32 * scale;
+        let drawn_h = state._img_height as f32 * scale;
+        state.canvas_scale = scale;
+        state.canvas_offset_x = (canvas_w - drawn_w) / 2.0;
+        state.canvas_offset_y = (canvas_h - drawn_h) / 2.0;
+    }
+
     // ─── Rendering ──────────────────────────────────────────────────────────
 
     fn render(state: &EditorState) {
@@ -391,15 +469,22 @@ impl AnnotationEditor {
                 a: 1.0,
             }));
 
-            let win_size = rt.GetSize();
+            // Set image-space transform: scale + translate so image is centered below toolbar
+            let img_transform = windows_numerics::Matrix3x2 {
+                M11: state.canvas_scale, M12: 0.0,
+                M21: 0.0, M22: state.canvas_scale,
+                M31: state.canvas_offset_x,
+                M32: TOOLBAR_HEIGHT + state.canvas_offset_y,
+            };
+            rt.SetTransform(&img_transform);
 
-            // Draw screenshot
+            // Draw screenshot at native size (transform handles positioning)
             if let Some(bmp) = &state.bitmap {
                 let dst = D2D_RECT_F {
                     left: 0.0,
-                    top: TOOLBAR_HEIGHT,
-                    right: win_size.width,
-                    bottom: win_size.height,
+                    top: 0.0,
+                    right: state._img_width as f32,
+                    bottom: state._img_height as f32,
                 };
                 rt.DrawBitmap(
                     bmp,
@@ -410,19 +495,19 @@ impl AnnotationEditor {
                 );
             }
 
-            // Draw committed annotations
+            // Draw committed annotations (in image space, y_offset=0)
             for ann in &state.layer.annotations {
-                Self::draw_annotation(rt, ann, TOOLBAR_HEIGHT, state.pixels.as_ref(), state.pen_stroke_style.as_ref(), state.dwrite_factory.as_ref());
+                Self::draw_annotation(rt, ann, 0.0, state.pixels.as_ref(), state.pen_stroke_style.as_ref(), state.dwrite_factory.as_ref());
             }
 
             // Draw live preview
             if state.drawing {
                 if let Some(preview) = Self::build_current_annotation(state) {
-                    Self::draw_annotation(rt, &preview, TOOLBAR_HEIGHT, state.pixels.as_ref(), state.pen_stroke_style.as_ref(), state.dwrite_factory.as_ref());
+                    Self::draw_annotation(rt, &preview, 0.0, state.pixels.as_ref(), state.pen_stroke_style.as_ref(), state.dwrite_factory.as_ref());
                 }
             }
 
-            // Draw text being edited
+            // Draw text being edited (in image space)
             if state.text_editing && !state.text_buffer.is_empty() {
                 if let Some(dwrite) = &state.dwrite_factory {
                     Self::draw_text_preview(
@@ -430,21 +515,60 @@ impl AnnotationEditor {
                         dwrite,
                         &state.text_buffer,
                         state.text_position.x,
-                        state.text_position.y + TOOLBAR_HEIGHT,
+                        state.text_position.y,
                         &state.stroke_color,
                         state.thickness * 4.0,
                     );
                 }
             }
 
-            // Draw text cursor
+            // Draw text cursor (in image space)
             if state.text_editing {
                 Self::draw_text_cursor(
                     rt,
                     state,
-                    TOOLBAR_HEIGHT,
+                    0.0,
                 );
             }
+
+            // Draw selection highlight around selected annotation
+            if let Some(idx) = state.selected_index {
+                if let Some(ann) = state.layer.annotations.get(idx) {
+                    let (min_x, min_y, max_x, max_y) = ann.bounding_box();
+                    let pad = 4.0;
+                    let sel_rect = D2D_RECT_F {
+                        left: min_x - pad,
+                        top: min_y - pad,
+                        right: max_x + pad,
+                        bottom: max_y + pad,
+                    };
+                    if let Ok(brush) = rt.CreateSolidColorBrush(
+                        &D2D1_COLOR_F { r: 0.2, g: 0.5, b: 1.0, a: 0.9 },
+                        None,
+                    ) {
+                        // Create dashed stroke style
+                        if let Some(factory) = &state.d2d_factory {
+                            if let Ok(base_factory) = factory.cast::<ID2D1Factory>() {
+                                let dash_props = D2D1_STROKE_STYLE_PROPERTIES {
+                                    dashStyle: D2D1_DASH_STYLE_DASH,
+                                    ..Default::default()
+                                };
+                                if let Ok(dash_style) = base_factory.CreateStrokeStyle(&dash_props, None) {
+                                    rt.DrawRectangle(&sel_rect, &brush, 2.0 / state.canvas_scale, Some(&dash_style));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Reset transform for toolbar (drawn in screen space)
+            let identity = windows_numerics::Matrix3x2 {
+                M11: 1.0, M12: 0.0,
+                M21: 0.0, M22: 1.0,
+                M31: 0.0, M32: 0.0,
+            };
+            rt.SetTransform(&identity);
 
             // Draw toolbar
             Self::draw_toolbar(rt, state);
@@ -658,6 +782,37 @@ impl AnnotationEditor {
                         }
                     }
                 }
+
+                Annotation::Emoji {
+                    position,
+                    emoji,
+                    size,
+                } => {
+                    if let Some(dwrite) = dwrite_factory {
+                        if let Ok(brush) = rt.CreateSolidColorBrush(
+                            &D2D1_COLOR_F { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }, None,
+                        ) {
+                            let wide: Vec<u16> = emoji.encode_utf16().collect();
+                            if let Ok(fmt) = dwrite.CreateTextFormat(
+                                w!("Segoe UI Emoji"), None,
+                                DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                                DWRITE_FONT_STRETCH_NORMAL, *size, w!("en-US"),
+                            ) {
+                                let rect = D2D_RECT_F {
+                                    left: position.x,
+                                    top: position.y + y_offset,
+                                    right: position.x + *size * 1.5,
+                                    bottom: position.y + y_offset + *size * 1.5,
+                                };
+                                rt.DrawText(
+                                    &wide, &fmt, &rect, &brush,
+                                    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+                                    DWRITE_MEASURING_MODE_NATURAL,
+                                );
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -763,6 +918,7 @@ impl AnnotationEditor {
             let tools = [
                 AnnotationTool::Arrow, AnnotationTool::Rectangle, AnnotationTool::Highlight,
                 AnnotationTool::Pen, AnnotationTool::Blur, AnnotationTool::Text,
+                AnnotationTool::Emoji,
             ];
 
             for (i, tool) in tools.iter().enumerate() {
@@ -837,8 +993,8 @@ impl AnnotationEditor {
 
             // ── Row 2: Color swatches + Thickness presets ──
 
-            // Shortcut hints
-            let shortcuts = ["A", "R", "H", "P", "B", "T"];
+            // Shortcut hints for tool buttons
+            let shortcuts = ["A", "R", "H", "P", "B", "T", "E"];
             for (i, key) in shortcuts.iter().enumerate() {
                 let x = MARGIN_X + i as f32 * ROW1_BTN_STEP;
                 let wide: Vec<u16> = key.encode_utf16().collect();
@@ -849,72 +1005,168 @@ impl AnnotationEditor {
                 rt.DrawText(&wide, &cb.hint_format, &rect, &cb.hint_text, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
             }
 
-            // Color swatches
-            for (i, _color) in Color::PALETTE.iter().enumerate() {
-                let x = MARGIN_X + i as f32 * SWATCH_STEP;
-                let y = ROW2_TOP + (26.0 - SWATCH_SIZE) / 2.0;
-
+            // Shortcut hints for action buttons (Undo, Redo, Done, Cancel)
+            let action_hints = [("Ctrl+Z", action_x), ("Ctrl+Y", action_x + ROW1_BTN_STEP),
+                                ("Enter", done_x), ("Esc", done_x + ROW1_BTN_STEP)];
+            for (key, x) in action_hints {
+                let wide: Vec<u16> = key.encode_utf16().collect();
                 let rect = D2D_RECT_F {
-                    left: x + 1.0, top: y + 1.0,
-                    right: x + SWATCH_SIZE - 1.0, bottom: y + SWATCH_SIZE - 1.0,
+                    left: x + 2.0, top: ROW1_TOP + 2.0,
+                    right: x + ROW1_BTN_SIZE - 2.0, bottom: ROW1_TOP + ROW1_BTN_SIZE - 1.0,
                 };
-                rt.FillRoundedRectangle(
-                    &D2D1_ROUNDED_RECT { rect, radiusX: 3.0, radiusY: 3.0 },
-                    &cb.palette[i],
-                );
-
-                if i == state.color_index {
-                    let rect = D2D_RECT_F {
-                        left: x, top: y, right: x + SWATCH_SIZE, bottom: y + SWATCH_SIZE,
-                    };
-                    rt.DrawRoundedRectangle(
-                        &D2D1_ROUNDED_RECT { rect, radiusX: 4.0, radiusY: 4.0 },
-                        &cb.selection_ring, 2.0, None,
-                    );
-                } else {
-                    let rect = D2D_RECT_F {
-                        left: x + 0.5, top: y + 0.5,
-                        right: x + SWATCH_SIZE - 0.5, bottom: y + SWATCH_SIZE - 0.5,
-                    };
-                    rt.DrawRoundedRectangle(
-                        &D2D1_ROUNDED_RECT { rect, radiusX: 3.5, radiusY: 3.5 },
-                        &cb.outline, 0.5, None,
-                    );
-                }
+                rt.DrawText(&wide, &cb.hint_format, &rect, &cb.hint_text, D2D1_DRAW_TEXT_OPTIONS_NONE, DWRITE_MEASURING_MODE_NATURAL);
             }
 
-            // Separator between colors and thickness
-            let color_end_x = MARGIN_X + Color::PALETTE.len() as f32 * SWATCH_STEP + 2.0;
-            rt.DrawLine(
-                windows_numerics::Vector2 { X: color_end_x, Y: ROW2_TOP + 3.0 },
-                windows_numerics::Vector2 { X: color_end_x, Y: ROW2_TOP + 23.0 },
-                &cb.separator, 1.0, None,
-            );
+            if state.tool == AnnotationTool::Emoji {
+                // ── Row 2: Emoji picker + Thickness presets ──
+                for (i, emoji_str) in EMOJI_PALETTE.iter().enumerate() {
+                    let x = MARGIN_X + i as f32 * SWATCH_STEP;
+                    let y = ROW2_TOP + (26.0 - SWATCH_SIZE) / 2.0;
 
-            // Thickness presets
-            let thick_start_x = color_end_x + SEP_W;
-            for (i, &t) in THICKNESS_PRESETS.iter().enumerate() {
-                let x = thick_start_x + i as f32 * SWATCH_STEP;
-                let y = ROW2_TOP + (26.0 - SWATCH_SIZE) / 2.0;
+                    // Selection ring or outline
+                    if i == state.emoji_index {
+                        let rect = D2D_RECT_F {
+                            left: x, top: y, right: x + SWATCH_SIZE, bottom: y + SWATCH_SIZE,
+                        };
+                        rt.DrawRoundedRectangle(
+                            &D2D1_ROUNDED_RECT { rect, radiusX: 4.0, radiusY: 4.0 },
+                            &cb.selection_ring, 2.0, None,
+                        );
+                    } else {
+                        let rect = D2D_RECT_F {
+                            left: x + 0.5, top: y + 0.5,
+                            right: x + SWATCH_SIZE - 0.5, bottom: y + SWATCH_SIZE - 0.5,
+                        };
+                        rt.DrawRoundedRectangle(
+                            &D2D1_ROUNDED_RECT { rect, radiusX: 3.5, radiusY: 3.5 },
+                            &cb.outline, 0.5, None,
+                        );
+                    }
 
-                if state.thickness_index == i {
+                    // Draw emoji text using DirectWrite
+                    if let Some(dwrite) = &state.dwrite_factory {
+                        if let Ok(fmt) = dwrite.CreateTextFormat(
+                            w!("Segoe UI Emoji"), None,
+                            DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                            DWRITE_FONT_STRETCH_NORMAL, 14.0, w!("en-US"),
+                        ) {
+                            let _ = fmt.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                            let _ = fmt.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                            let wide: Vec<u16> = emoji_str.encode_utf16().collect();
+                            let text_rect = D2D_RECT_F {
+                                left: x, top: y,
+                                right: x + SWATCH_SIZE, bottom: y + SWATCH_SIZE,
+                            };
+                            rt.DrawText(
+                                &wide, &fmt, &text_rect, &cb.icon_white,
+                                D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+                                DWRITE_MEASURING_MODE_NATURAL,
+                            );
+                        }
+                    }
+                }
+
+                // Separator between emojis and thickness
+                let emoji_end_x = MARGIN_X + EMOJI_PALETTE.len() as f32 * SWATCH_STEP + 2.0;
+                rt.DrawLine(
+                    windows_numerics::Vector2 { X: emoji_end_x, Y: ROW2_TOP + 3.0 },
+                    windows_numerics::Vector2 { X: emoji_end_x, Y: ROW2_TOP + 23.0 },
+                    &cb.separator, 1.0, None,
+                );
+
+                // Thickness presets
+                let thick_start_x = emoji_end_x + SEP_W;
+                for (i, &t) in THICKNESS_PRESETS.iter().enumerate() {
+                    let x = thick_start_x + i as f32 * SWATCH_STEP;
+                    let y = ROW2_TOP + (26.0 - SWATCH_SIZE) / 2.0;
+
+                    if state.thickness_index == i {
+                        let center = windows_numerics::Vector2 {
+                            X: x + SWATCH_SIZE / 2.0, Y: y + SWATCH_SIZE / 2.0,
+                        };
+                        rt.DrawEllipse(
+                            &D2D1_ELLIPSE { point: center, radiusX: SWATCH_SIZE / 2.0, radiusY: SWATCH_SIZE / 2.0 },
+                            &cb.selection_ring, 2.0, None,
+                        );
+                    }
+
+                    let dot_radius = (t / 2.0).clamp(1.5, 8.0);
                     let center = windows_numerics::Vector2 {
                         X: x + SWATCH_SIZE / 2.0, Y: y + SWATCH_SIZE / 2.0,
                     };
-                    rt.DrawEllipse(
-                        &D2D1_ELLIPSE { point: center, radiusX: SWATCH_SIZE / 2.0, radiusY: SWATCH_SIZE / 2.0 },
-                        &cb.selection_ring, 2.0, None,
+                    rt.FillEllipse(
+                        &D2D1_ELLIPSE { point: center, radiusX: dot_radius, radiusY: dot_radius },
+                        &cb.icon_normal,
                     );
                 }
+            } else {
+                // ── Row 2: Color swatches + Thickness presets ──
+                for (i, _color) in Color::PALETTE.iter().enumerate() {
+                    let x = MARGIN_X + i as f32 * SWATCH_STEP;
+                    let y = ROW2_TOP + (26.0 - SWATCH_SIZE) / 2.0;
 
-                let dot_radius = (t / 2.0).clamp(1.5, 8.0);
-                let center = windows_numerics::Vector2 {
-                    X: x + SWATCH_SIZE / 2.0, Y: y + SWATCH_SIZE / 2.0,
-                };
-                rt.FillEllipse(
-                    &D2D1_ELLIPSE { point: center, radiusX: dot_radius, radiusY: dot_radius },
-                    &cb.icon_normal,
+                    let rect = D2D_RECT_F {
+                        left: x + 1.0, top: y + 1.0,
+                        right: x + SWATCH_SIZE - 1.0, bottom: y + SWATCH_SIZE - 1.0,
+                    };
+                    rt.FillRoundedRectangle(
+                        &D2D1_ROUNDED_RECT { rect, radiusX: 3.0, radiusY: 3.0 },
+                        &cb.palette[i],
+                    );
+
+                    if i == state.color_index {
+                        let rect = D2D_RECT_F {
+                            left: x, top: y, right: x + SWATCH_SIZE, bottom: y + SWATCH_SIZE,
+                        };
+                        rt.DrawRoundedRectangle(
+                            &D2D1_ROUNDED_RECT { rect, radiusX: 4.0, radiusY: 4.0 },
+                            &cb.selection_ring, 2.0, None,
+                        );
+                    } else {
+                        let rect = D2D_RECT_F {
+                            left: x + 0.5, top: y + 0.5,
+                            right: x + SWATCH_SIZE - 0.5, bottom: y + SWATCH_SIZE - 0.5,
+                        };
+                        rt.DrawRoundedRectangle(
+                            &D2D1_ROUNDED_RECT { rect, radiusX: 3.5, radiusY: 3.5 },
+                            &cb.outline, 0.5, None,
+                        );
+                    }
+                }
+
+                // Separator between colors and thickness
+                let color_end_x = MARGIN_X + Color::PALETTE.len() as f32 * SWATCH_STEP + 2.0;
+                rt.DrawLine(
+                    windows_numerics::Vector2 { X: color_end_x, Y: ROW2_TOP + 3.0 },
+                    windows_numerics::Vector2 { X: color_end_x, Y: ROW2_TOP + 23.0 },
+                    &cb.separator, 1.0, None,
                 );
+
+                // Thickness presets
+                let thick_start_x = color_end_x + SEP_W;
+                for (i, &t) in THICKNESS_PRESETS.iter().enumerate() {
+                    let x = thick_start_x + i as f32 * SWATCH_STEP;
+                    let y = ROW2_TOP + (26.0 - SWATCH_SIZE) / 2.0;
+
+                    if state.thickness_index == i {
+                        let center = windows_numerics::Vector2 {
+                            X: x + SWATCH_SIZE / 2.0, Y: y + SWATCH_SIZE / 2.0,
+                        };
+                        rt.DrawEllipse(
+                            &D2D1_ELLIPSE { point: center, radiusX: SWATCH_SIZE / 2.0, radiusY: SWATCH_SIZE / 2.0 },
+                            &cb.selection_ring, 2.0, None,
+                        );
+                    }
+
+                    let dot_radius = (t / 2.0).clamp(1.5, 8.0);
+                    let center = windows_numerics::Vector2 {
+                        X: x + SWATCH_SIZE / 2.0, Y: y + SWATCH_SIZE / 2.0,
+                    };
+                    rt.FillEllipse(
+                        &D2D1_ELLIPSE { point: center, radiusX: dot_radius, radiusY: dot_radius },
+                        &cb.icon_normal,
+                    );
+                }
             }
         }
     }
@@ -1052,6 +1304,37 @@ impl AnnotationEditor {
                         brush,
                         3.0,
                         None,
+                    );
+                }
+                AnnotationTool::Emoji => {
+                    // Smiley face icon
+                    let r = 11.0f32;
+                    let center = windows_numerics::Vector2 { X: cx, Y: cy };
+                    rt.DrawEllipse(
+                        &D2D1_ELLIPSE { point: center, radiusX: r, radiusY: r },
+                        brush, 2.0, None,
+                    );
+                    // Eyes
+                    let eye_y = cy - 3.0;
+                    let left_eye = windows_numerics::Vector2 { X: cx - 4.0, Y: eye_y };
+                    let right_eye = windows_numerics::Vector2 { X: cx + 4.0, Y: eye_y };
+                    rt.FillEllipse(&D2D1_ELLIPSE { point: left_eye, radiusX: 1.5, radiusY: 1.5 }, brush);
+                    rt.FillEllipse(&D2D1_ELLIPSE { point: right_eye, radiusX: 1.5, radiusY: 1.5 }, brush);
+                    // Smile (arc approximated with a line)
+                    rt.DrawLine(
+                        windows_numerics::Vector2 { X: cx - 5.0, Y: cy + 3.5 },
+                        windows_numerics::Vector2 { X: cx - 2.0, Y: cy + 5.5 },
+                        brush, 1.5, None,
+                    );
+                    rt.DrawLine(
+                        windows_numerics::Vector2 { X: cx - 2.0, Y: cy + 5.5 },
+                        windows_numerics::Vector2 { X: cx + 2.0, Y: cy + 5.5 },
+                        brush, 1.5, None,
+                    );
+                    rt.DrawLine(
+                        windows_numerics::Vector2 { X: cx + 2.0, Y: cy + 5.5 },
+                        windows_numerics::Vector2 { X: cx + 5.0, Y: cy + 3.5 },
+                        brush, 1.5, None,
                     );
                 }
             }
@@ -1264,12 +1547,26 @@ impl AnnotationEditor {
                 }
             }
             AnnotationTool::Text => None, // Text is handled separately via text_editing
+            AnnotationTool::Emoji => {
+                let dx = (e.x - s.x).abs();
+                let dy = (e.y - s.y).abs();
+                let span = dx.max(dy).max(state.thickness * 4.0);
+                // Render rect is size*1.5, so solve for size
+                let size = span / 1.5;
+                let left = s.x.min(e.x);
+                let top = s.y.min(e.y);
+                Some(Annotation::Emoji {
+                    position: Point { x: left, y: top },
+                    emoji: EMOJI_PALETTE[state.emoji_index].to_string(),
+                    size,
+                })
+            }
         }
     }
 
     // ─── Hit testing ────────────────────────────────────────────────────────
 
-    fn hit_test(x: i32, y: i32) -> ToolbarHit {
+    fn hit_test(x: i32, y: i32, current_tool: AnnotationTool) -> ToolbarHit {
         let fx = x as f32;
         let fy = y as f32;
 
@@ -1282,6 +1579,7 @@ impl AnnotationEditor {
                 AnnotationTool::Pen,
                 AnnotationTool::Blur,
                 AnnotationTool::Text,
+                AnnotationTool::Emoji,
             ];
 
             // Tool buttons
@@ -1316,24 +1614,43 @@ impl AnnotationEditor {
             }
         }
 
-        // Row 2: Color swatches
+        // Row 2
         if fy >= ROW2_TOP && fy <= ROW2_TOP + 26.0 {
             let swatch_y = ROW2_TOP + (26.0 - SWATCH_SIZE) / 2.0;
             if fy >= swatch_y && fy <= swatch_y + SWATCH_SIZE {
-                for i in 0..Color::PALETTE.len() {
-                    let sx = MARGIN_X + i as f32 * SWATCH_STEP;
-                    if fx >= sx && fx <= sx + SWATCH_SIZE {
-                        return ToolbarHit::Color(i);
+                if current_tool == AnnotationTool::Emoji {
+                    // Emoji picker cells
+                    for i in 0..EMOJI_PALETTE.len() {
+                        let sx = MARGIN_X + i as f32 * SWATCH_STEP;
+                        if fx >= sx && fx <= sx + SWATCH_SIZE {
+                            return ToolbarHit::Emoji(i);
+                        }
                     }
-                }
-
-                // Thickness presets
-                let color_end_x = MARGIN_X + Color::PALETTE.len() as f32 * SWATCH_STEP + 2.0;
-                let thick_start_x = color_end_x + SEP_W;
-                for i in 0..THICKNESS_PRESETS.len() {
-                    let tx = thick_start_x + i as f32 * SWATCH_STEP;
-                    if fx >= tx && fx <= tx + SWATCH_SIZE {
-                        return ToolbarHit::Thickness(i);
+                    // Thickness presets after emoji palette
+                    let emoji_end_x = MARGIN_X + EMOJI_PALETTE.len() as f32 * SWATCH_STEP + 2.0;
+                    let thick_start_x = emoji_end_x + SEP_W;
+                    for i in 0..THICKNESS_PRESETS.len() {
+                        let tx = thick_start_x + i as f32 * SWATCH_STEP;
+                        if fx >= tx && fx <= tx + SWATCH_SIZE {
+                            return ToolbarHit::Thickness(i);
+                        }
+                    }
+                } else {
+                    // Color swatches
+                    for i in 0..Color::PALETTE.len() {
+                        let sx = MARGIN_X + i as f32 * SWATCH_STEP;
+                        if fx >= sx && fx <= sx + SWATCH_SIZE {
+                            return ToolbarHit::Color(i);
+                        }
+                    }
+                    // Thickness presets after color palette
+                    let color_end_x = MARGIN_X + Color::PALETTE.len() as f32 * SWATCH_STEP + 2.0;
+                    let thick_start_x = color_end_x + SEP_W;
+                    for i in 0..THICKNESS_PRESETS.len() {
+                        let tx = thick_start_x + i as f32 * SWATCH_STEP;
+                        if fx >= tx && fx <= tx + SWATCH_SIZE {
+                            return ToolbarHit::Thickness(i);
+                        }
                     }
                 }
             }
@@ -1350,30 +1667,68 @@ impl AnnotationEditor {
             return -1;
         }
 
-        // Tool buttons (0..5)
-        for i in 0..6 {
+        // Tool buttons (0..6)
+        for i in 0..7 {
             let bx = MARGIN_X + i as f32 * ROW1_BTN_STEP;
             if fx >= bx && fx <= bx + ROW1_BTN_SIZE {
                 return i as i32;
             }
         }
 
-        // Action buttons (6=Undo, 7=Redo, 8=Done, 9=Cancel)
-        let sep1_x = MARGIN_X + 6.0 * ROW1_BTN_STEP + 2.0;
+        // Action buttons (7=Undo, 8=Redo, 9=Done, 10=Cancel)
+        let sep1_x = MARGIN_X + 7.0 * ROW1_BTN_STEP + 2.0;
         let action_x = sep1_x + SEP_W;
 
         let undo_x = action_x;
-        if fx >= undo_x && fx <= undo_x + ROW1_BTN_SIZE { return 6; }
+        if fx >= undo_x && fx <= undo_x + ROW1_BTN_SIZE { return 7; }
         let redo_x = action_x + ROW1_BTN_STEP;
-        if fx >= redo_x && fx <= redo_x + ROW1_BTN_SIZE { return 7; }
+        if fx >= redo_x && fx <= redo_x + ROW1_BTN_SIZE { return 8; }
 
         let sep2_x = action_x + 2.0 * ROW1_BTN_STEP + 2.0;
         let done_x = sep2_x + SEP_W;
-        if fx >= done_x && fx <= done_x + ROW1_BTN_SIZE { return 8; }
+        if fx >= done_x && fx <= done_x + ROW1_BTN_SIZE { return 9; }
         let cancel_x = done_x + ROW1_BTN_STEP;
-        if fx >= cancel_x && fx <= cancel_x + ROW1_BTN_SIZE { return 9; }
+        if fx >= cancel_x && fx <= cancel_x + ROW1_BTN_SIZE { return 10; }
 
         -1
+    }
+
+    fn perform_undo(state: &mut EditorState) {
+        if let Some(action) = state.undo_stack.pop() {
+            match &action {
+                UndoAction::Add(_) => {
+                    // Remove the last annotation
+                    state.layer.annotations.pop();
+                }
+                UndoAction::Move { index, dx, dy } => {
+                    // Reverse the move
+                    if let Some(ann) = state.layer.annotations.get_mut(*index) {
+                        ann.offset_by(-dx, -dy);
+                    }
+                }
+            }
+            state.redo_stack.push(action);
+            state.selected_index = None;
+            Self::notify_change(state);
+        }
+    }
+
+    fn perform_redo(state: &mut EditorState) {
+        if let Some(action) = state.redo_stack.pop() {
+            match &action {
+                UndoAction::Add(ann) => {
+                    state.layer.add(ann.clone());
+                }
+                UndoAction::Move { index, dx, dy } => {
+                    if let Some(a) = state.layer.annotations.get_mut(*index) {
+                        a.offset_by(*dx, *dy);
+                    }
+                }
+            }
+            state.undo_stack.push(action);
+            state.selected_index = None;
+            Self::notify_change(state);
+        }
     }
 
     fn commit_text(state: &mut EditorState) {
@@ -1384,11 +1739,21 @@ impl AnnotationEditor {
                 color: state.stroke_color,
                 font_size: state.thickness * 4.0,
             };
-            state.layer.add(annotation);
+            state.layer.add(annotation.clone());
+            state.undo_stack.push(UndoAction::Add(annotation));
             state.redo_stack.clear();
+            Self::notify_change(state);
         }
         state.text_editing = false;
         state.text_buffer.clear();
+    }
+
+    /// Fire the on_change callback so the caller can update the clipboard
+    /// with the latest annotated image.
+    fn notify_change(state: &EditorState) {
+        if let (Some(cb), Some(pixels)) = (&state.on_change, &state.pixels) {
+            cb(pixels, &state.layer);
+        }
     }
 
     // ─── Window procedure ───────────────────────────────────────────────────
@@ -1481,14 +1846,16 @@ impl AnnotationEditor {
             WM_SIZE => {
                 let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut EditorState;
                 if !state_ptr.is_null() {
-                    if let Some(rt) = &(*state_ptr).render_target {
-                        let w = (lparam.0 & 0xFFFF) as u32;
-                        let h = ((lparam.0 >> 16) & 0xFFFF) as u32;
+                    let state = &mut *state_ptr;
+                    let w = (lparam.0 & 0xFFFF) as u32;
+                    let h = ((lparam.0 >> 16) & 0xFFFF) as u32;
+                    if let Some(rt) = &state.render_target {
                         let _ = rt.Resize(&D2D_SIZE_U {
                             width: w.max(1),
                             height: h.max(1),
                         });
                     }
+                    Self::recompute_canvas_transform(state, w.max(1) as f32, h.max(1) as f32);
                 }
                 LRESULT(0)
             }
@@ -1527,7 +1894,7 @@ impl AnnotationEditor {
 
                     if (y as f32) < TOOLBAR_HEIGHT {
                         // Toolbar click
-                        match Self::hit_test(x, y) {
+                        match Self::hit_test(x, y, state.tool) {
                             ToolbarHit::Tool(tool) => {
                                 // Commit any pending text before switching tools
                                 if state.text_editing {
@@ -1536,14 +1903,10 @@ impl AnnotationEditor {
                                 state.tool = tool;
                             }
                             ToolbarHit::Undo => {
-                                if let Some(ann) = state.layer.undo() {
-                                    state.redo_stack.push(ann);
-                                }
+                                Self::perform_undo(state);
                             }
                             ToolbarHit::Redo => {
-                                if let Some(ann) = state.redo_stack.pop() {
-                                    state.layer.add(ann);
-                                }
+                                Self::perform_redo(state);
                             }
                             ToolbarHit::Done => {
                                 if state.text_editing {
@@ -1572,11 +1935,19 @@ impl AnnotationEditor {
                                 state.thickness_index = idx;
                                 state.thickness = THICKNESS_PRESETS[idx];
                             }
+                            ToolbarHit::Emoji(idx) => {
+                                state.emoji_index = idx;
+                            }
                             ToolbarHit::None => {}
                         }
                         let _ = InvalidateRect(Some(hwnd), None, false);
                     } else {
-                        let canvas_y = y as f32 - TOOLBAR_HEIGHT;
+                        // Transform screen coords to image space
+                        let img_x = (x as f32 - state.canvas_offset_x) / state.canvas_scale;
+                        let img_y = (y as f32 - TOOLBAR_HEIGHT - state.canvas_offset_y) / state.canvas_scale;
+
+                        // Clear right-click selection on any left-click on canvas
+                        state.selected_index = None;
 
                         if state.tool == AnnotationTool::Text {
                             // Commit previous text if any, then start new text
@@ -1585,8 +1956,8 @@ impl AnnotationEditor {
                             }
                             state.text_editing = true;
                             state.text_position = Point {
-                                x: x as f32,
-                                y: canvas_y,
+                                x: img_x,
+                                y: img_y,
                             };
                             state.text_buffer.clear();
                             let _ = InvalidateRect(Some(hwnd), None, false);
@@ -1595,11 +1966,11 @@ impl AnnotationEditor {
                             if state.text_editing {
                                 Self::commit_text(state);
                             }
-                            // Start drawing on canvas
+                            // Start drawing on canvas (image-space coords)
                             state.drawing = true;
                             state.draw_start = Point {
-                                x: x as f32,
-                                y: canvas_y,
+                                x: img_x,
+                                y: img_y,
                             };
                             state.draw_current = state.draw_start;
                             state.pen_points.clear();
@@ -1618,11 +1989,26 @@ impl AnnotationEditor {
                     let x = (lparam.0 & 0xFFFF) as i16 as i32;
                     let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
 
-                    if state.drawing {
-                        let canvas_y = y as f32 - TOOLBAR_HEIGHT;
+                    if state.dragging_selected {
+                        // Right-click drag: move the selected annotation
+                        let img_x = (x as f32 - state.canvas_offset_x) / state.canvas_scale;
+                        let img_y = (y as f32 - TOOLBAR_HEIGHT - state.canvas_offset_y) / state.canvas_scale;
+                        let dx = img_x - state.drag_last_img.x;
+                        let dy = img_y - state.drag_last_img.y;
+                        if let Some(idx) = state.selected_index {
+                            if let Some(ann) = state.layer.annotations.get_mut(idx) {
+                                ann.offset_by(dx, dy);
+                            }
+                        }
+                        state.drag_last_img = Point { x: img_x, y: img_y };
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                    } else if state.drawing {
+                        // Transform screen coords to image space
+                        let img_x = (x as f32 - state.canvas_offset_x) / state.canvas_scale;
+                        let img_y = (y as f32 - TOOLBAR_HEIGHT - state.canvas_offset_y) / state.canvas_scale;
                         state.draw_current = Point {
-                            x: x as f32,
-                            y: canvas_y,
+                            x: img_x,
+                            y: img_y,
                         };
                         if state.tool == AnnotationTool::Pen {
                             state.pen_points.push(state.draw_current);
@@ -1651,11 +2037,77 @@ impl AnnotationEditor {
                         let _ = ReleaseCapture();
 
                         if let Some(annotation) = Self::build_current_annotation(state) {
-                            state.layer.add(annotation);
-                            state.redo_stack.clear(); // new annotation invalidates redo
+                            state.layer.add(annotation.clone());
+                            state.undo_stack.push(UndoAction::Add(annotation));
+                            state.redo_stack.clear();
+                            Self::notify_change(state);
                         }
                         state.pen_points.clear();
                         Self::render(state);
+                    }
+                }
+                LRESULT(0)
+            }
+
+            WM_RBUTTONDOWN => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut EditorState;
+                if !state_ptr.is_null() {
+                    let state = &mut *state_ptr;
+                    let x = (lparam.0 & 0xFFFF) as i16 as i32;
+                    let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
+
+                    if (y as f32) >= TOOLBAR_HEIGHT {
+                        // Transform screen coords to image space
+                        let img_x = (x as f32 - state.canvas_offset_x) / state.canvas_scale;
+                        let img_y = (y as f32 - TOOLBAR_HEIGHT - state.canvas_offset_y) / state.canvas_scale;
+
+                        // Hit-test annotations in reverse order (topmost first)
+                        let mut hit = None;
+                        for i in (0..state.layer.annotations.len()).rev() {
+                            if state.layer.annotations[i].hit_test_point(img_x, img_y) {
+                                hit = Some(i);
+                                break;
+                            }
+                        }
+
+                        if let Some(idx) = hit {
+                            state.selected_index = Some(idx);
+                            state.dragging_selected = true;
+                            state.drag_start_img = Point { x: img_x, y: img_y };
+                            state.drag_last_img = Point { x: img_x, y: img_y };
+                            SetCapture(hwnd);
+                        } else {
+                            state.selected_index = None;
+                        }
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                    }
+                }
+                LRESULT(0)
+            }
+
+            WM_RBUTTONUP => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut EditorState;
+                if !state_ptr.is_null() {
+                    let state = &mut *state_ptr;
+                    if state.dragging_selected {
+                        let _ = ReleaseCapture();
+                        state.dragging_selected = false;
+
+                        if let Some(idx) = state.selected_index {
+                            let total_dx = state.drag_last_img.x - state.drag_start_img.x;
+                            let total_dy = state.drag_last_img.y - state.drag_start_img.y;
+                            // Only push undo if actually moved
+                            if total_dx.abs() > 0.5 || total_dy.abs() > 0.5 {
+                                state.undo_stack.push(UndoAction::Move {
+                                    index: idx,
+                                    dx: total_dx,
+                                    dy: total_dy,
+                                });
+                                state.redo_stack.clear();
+                                Self::notify_change(state);
+                            }
+                        }
+                        let _ = InvalidateRect(Some(hwnd), None, false);
                     }
                 }
                 LRESULT(0)
@@ -1712,15 +2164,11 @@ impl AnnotationEditor {
                             }
                         } else if vk == 0x5A && ctrl {
                             // Ctrl+Z → Undo
-                            if let Some(ann) = state.layer.undo() {
-                                state.redo_stack.push(ann);
-                            }
+                            Self::perform_undo(state);
                             let _ = InvalidateRect(Some(hwnd), None, false);
                         } else if vk == 0x59 && ctrl {
                             // Ctrl+Y → Redo
-                            if let Some(ann) = state.redo_stack.pop() {
-                                state.layer.add(ann);
-                            }
+                            Self::perform_redo(state);
                             let _ = InvalidateRect(Some(hwnd), None, false);
                         } else if !ctrl {
                             // Single-key tool shortcuts
@@ -1731,6 +2179,7 @@ impl AnnotationEditor {
                                 0x50 => Some(AnnotationTool::Pen),       // P
                                 0x42 => Some(AnnotationTool::Blur),      // B
                                 0x54 => Some(AnnotationTool::Text),      // T
+                                0x45 => Some(AnnotationTool::Emoji),     // E
                                 _ => None,
                             };
                             if let Some(tool) = new_tool {
@@ -1795,6 +2244,16 @@ impl AnnotationEditor {
                     }
                     SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                 }
+                LRESULT(0)
+            }
+
+            WM_GETMINMAXINFO => {
+                let mmi = &mut *(lparam.0 as *mut MINMAXINFO);
+                // Convert client minimums to window minimums (account for title bar + borders)
+                let mut rc = RECT { left: 0, top: 0, right: MIN_CLIENT_W, bottom: MIN_CLIENT_H };
+                let _ = AdjustWindowRectEx(&mut rc, WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME, false, WS_EX_TOPMOST);
+                mmi.ptMinTrackSize.x = rc.right - rc.left;
+                mmi.ptMinTrackSize.y = rc.bottom - rc.top;
                 LRESULT(0)
             }
 
