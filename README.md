@@ -31,9 +31,10 @@ cargo build --workspace --release
 ## Features
 
 - Instant capture (< 1 ms to clipboard at P50)
-- Built-in annotation editor (arrows, rectangles, highlights, pen, blur, text)
+- Built-in annotation editor (arrows, rectangles, highlights, pen, blur, text, emoji)
+- Right-click drag to reposition any annotation
 - 9-color palette + 3 thickness presets
-- Undo / redo
+- Undo / redo (supports both draw and move operations)
 - Automatic history with full-resolution PNGs and thumbnail previews
 - Configurable hotkeys, retention policy, and start-on-login
 - System tray integration
@@ -58,9 +59,11 @@ cargo build --workspace --release
 | P | Pen tool |
 | B | Blur tool |
 | T | Text tool |
+| E | Emoji tool |
+| Right-click drag | Move annotation |
 | Ctrl+Z | Undo |
 | Ctrl+Y | Redo |
-| Shift+Enter | Done (save + copy) |
+| Enter / Shift+Enter | Done (save + copy) |
 | Escape | Cancel |
 
 
@@ -126,7 +129,7 @@ Benchmark harness and raw data via `snip-bench.exe`.
 
 ## Startup
 
-Total cold start: **~130 ms** (D3D11 device + overlay + editor + history DB, parallelized).
+Total cold start: **~128 ms** (D3D11 device + overlay + editor + history DB, parallelized).
 
 
 ## Architecture

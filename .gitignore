@@ -21,6 +21,14 @@ Desktop.ini
 nul
 NUL
 
+# Claude
+.claude/
+.claude_spec/
+
+# Logs
+*.log
+snipd_log.txt
+
 # Build artifacts
 *.msi
 installer/Output/

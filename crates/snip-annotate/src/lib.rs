@@ -227,14 +227,6 @@ impl AnnotationLayer {
         self.annotations.push(annotation);
     }
 
-    pub fn undo(&mut self) -> Option<Annotation> {
-        self.annotations.pop()
-    }
-
-    pub fn clear(&mut self) {
-        self.annotations.clear();
-    }
-
     pub fn is_empty(&self) -> bool {
         self.annotations.is_empty()
     }

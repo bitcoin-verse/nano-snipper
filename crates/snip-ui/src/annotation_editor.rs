@@ -164,8 +164,8 @@ struct EditorState {
 
     // Original pixels (for blur preview sampling)
     pixels: Option<PixelBuffer>,
-    _img_width: u32,
-    _img_height: u32,
+    img_width: u32,
+    img_height: u32,
 
     // Annotation state
     layer: AnnotationLayer,
@@ -245,8 +245,8 @@ impl AnnotationEditor {
             bitmap: None,
             cached_brushes: None,
             pixels: None,
-            _img_width: 0,
-            _img_height: 0,
+            img_width: 0,
+            img_height: 0,
             layer: AnnotationLayer::new(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -349,7 +349,7 @@ impl AnnotationEditor {
                 info!("Annotation editor state is NULL — window was destroyed, cannot show");
                 return Err(anyhow::anyhow!("Editor state destroyed (GWLP_USERDATA is null)"));
             }
-            if !state_ptr.is_null() {
+            {
                 let state = &mut *state_ptr;
 
                 // Reset annotation state
@@ -365,8 +365,8 @@ impl AnnotationEditor {
                 state.text_buffer.clear();
                 state.hovered_btn = -1;
                 state.pixels = Some(pixels.clone());
-                state._img_width = pixels.width;
-                state._img_height = pixels.height;
+                state.img_width = pixels.width;
+                state.img_height = pixels.height;
                 state.callback = Some(callback);
                 state.on_change = on_change;
 
@@ -437,17 +437,17 @@ impl AnnotationEditor {
     fn recompute_canvas_transform(state: &mut EditorState, client_w: f32, client_h: f32) {
         let canvas_w = client_w;
         let canvas_h = client_h - TOOLBAR_HEIGHT;
-        if state._img_width == 0 || state._img_height == 0 || canvas_w <= 0.0 || canvas_h <= 0.0 {
+        if state.img_width == 0 || state.img_height == 0 || canvas_w <= 0.0 || canvas_h <= 0.0 {
             state.canvas_scale = 1.0;
             state.canvas_offset_x = 0.0;
             state.canvas_offset_y = 0.0;
             return;
         }
-        let scale_x = canvas_w / state._img_width as f32;
-        let scale_y = canvas_h / state._img_height as f32;
+        let scale_x = canvas_w / state.img_width as f32;
+        let scale_y = canvas_h / state.img_height as f32;
         let scale = scale_x.min(scale_y);
-        let drawn_w = state._img_width as f32 * scale;
-        let drawn_h = state._img_height as f32 * scale;
+        let drawn_w = state.img_width as f32 * scale;
+        let drawn_h = state.img_height as f32 * scale;
         state.canvas_scale = scale;
         state.canvas_offset_x = (canvas_w - drawn_w) / 2.0;
         state.canvas_offset_y = (canvas_h - drawn_h) / 2.0;
@@ -483,8 +483,8 @@ impl AnnotationEditor {
                 let dst = D2D_RECT_F {
                     left: 0.0,
                     top: 0.0,
-                    right: state._img_width as f32,
-                    bottom: state._img_height as f32,
+                    right: state.img_width as f32,
+                    bottom: state.img_height as f32,
                 };
                 rt.DrawBitmap(
                     bmp,
