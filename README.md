@@ -274,3 +274,7 @@ The codebase has been through a security audit covering unsafe code, Win32 API u
 ## License
 
 MIT
+
+Join the community: [t.me/GetVerse](https://t.me/GetVerse)
+
+Made with <3 at Bitcoin.com
