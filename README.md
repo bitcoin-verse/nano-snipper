@@ -258,6 +258,19 @@ max_size_mb = 2048
 | tracing | 0.1 | Structured logging |
 | uuid | 1 (v7) | Time-sortable history IDs |
 
+## Security
+
+The codebase has been through a security audit covering unsafe code, Win32 API usage, IPC, input validation, and error handling. Key hardening measures:
+
+- IPC named pipe uses `FILE_FLAG_FIRST_PIPE_INSTANCE` to prevent pipe squatting
+- All thread-shared state is protected by `Mutex` (no unsound `unsafe impl Send/Sync`)
+- IPC messages are size-capped (10 MB) on both server and client
+- File deletion is path-traversal-safe (canonicalization + prefix check)
+- No shell metacharacter injection (`explorer.exe` instead of `cmd /C start`)
+- All SQLite queries use parameterized statements
+- No network code — local-only IPC
+- App runs at standard user privilege (no elevation)
+
 ## License
 
 MIT

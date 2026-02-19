@@ -114,10 +114,11 @@ impl CachedEditorBrushes {
                 ).ok()
             };
             let palette_colors = Color::PALETTE;
-            let palette: [ID2D1SolidColorBrush; 9] = std::array::from_fn(|i| {
-                let c = &palette_colors[i];
-                rt.CreateSolidColorBrush(&to_d2d_color(c), None).unwrap()
-            });
+            let palette_vec: Option<Vec<ID2D1SolidColorBrush>> = palette_colors.iter()
+                .map(|c| rt.CreateSolidColorBrush(&to_d2d_color(c), None).ok())
+                .collect();
+            let palette: [ID2D1SolidColorBrush; 9] = palette_vec?
+                .try_into().ok()?;
 
             let hint_format = dwrite.CreateTextFormat(
                 w!("Segoe UI"), None,

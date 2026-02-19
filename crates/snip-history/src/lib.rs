@@ -8,7 +8,7 @@ use ns_common::PixelBuffer;
 use rusqlite::{params, Connection};
 use std::path::PathBuf;
 use std::sync::mpsc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 /// Commands sent to the background writer thread.
@@ -49,7 +49,7 @@ impl HistoryStore {
                 Self::writer_loop(writer_db_path, rx);
             })?;
 
-        info!("History store opened at {}", db_path.display());
+        info!("History store opened");
 
         Ok(Self {
             conn,
@@ -274,7 +274,7 @@ impl HistoryStore {
             ],
         )?;
 
-        info!("Saved capture {} to {}", entry.id, png_path.display());
+        info!("Saved capture {}", entry.id);
         Ok(())
     }
 
@@ -293,12 +293,9 @@ impl HistoryStore {
             params![id.to_string()],
         )?;
 
-        // Delete the PNG file
+        // Delete the PNG file (with path traversal protection)
         if let Some(path) = file_path {
-            let full_path = paths::captures_dir().join(&path);
-            if full_path.exists() {
-                std::fs::remove_file(&full_path)?;
-            }
+            safe_remove_in_captures_dir(&path);
         }
 
         info!("Deleted capture {id}");
@@ -325,8 +322,7 @@ impl HistoryStore {
             };
 
             for path in &paths {
-                let full = paths::captures_dir().join(path);
-                let _ = std::fs::remove_file(full);
+                safe_remove_in_captures_dir(path);
             }
 
             conn.execute(
@@ -360,8 +356,7 @@ impl HistoryStore {
             }
 
             for (id, file_path) in &to_delete {
-                let full = paths::captures_dir().join(file_path);
-                let _ = std::fs::remove_file(full);
+                safe_remove_in_captures_dir(file_path);
                 conn.execute("DELETE FROM captures WHERE id = ?1", params![id])?;
             }
 
@@ -372,6 +367,20 @@ impl HistoryStore {
 
         Ok(())
     }
+}
+
+/// Remove a file only if it resolves to within the captures directory.
+/// Prevents path traversal attacks via crafted relative paths in the DB.
+fn safe_remove_in_captures_dir(rel_path: &str) {
+    let captures_dir = paths::captures_dir();
+    let full_path = captures_dir.join(rel_path);
+    let Ok(canonical) = full_path.canonicalize() else { return };
+    let Ok(base) = captures_dir.canonicalize() else { return };
+    if !canonical.starts_with(&base) {
+        warn!("Path traversal blocked: refusing to delete outside captures dir");
+        return;
+    }
+    let _ = std::fs::remove_file(&canonical);
 }
 
 impl Drop for HistoryStore {

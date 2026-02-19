@@ -26,16 +26,10 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 /// Accessed by both the main thread and the IPC server thread.
 struct SharedState {
     config: Mutex<NsConfig>,
-    history: Option<snip_history::HistoryStore>,
+    history: Option<Mutex<snip_history::HistoryStore>>,
     paused: Mutex<bool>,
     main_hwnd: isize, // HWND as isize for Send safety; used by IPC to signal main thread
 }
-
-// SAFETY: SharedState only contains Mutex-protected data and HistoryStore
-// (which holds a Connection on the main thread and an mpsc::Sender).
-// The mpsc::Sender is Send, and Connection is used read-only from IPC thread.
-unsafe impl Send for SharedState {}
-unsafe impl Sync for SharedState {}
 
 /// Custom message ID for deferred GPU readback.
 const WM_APP_DEFERRED_READBACK: u32 = WM_APP + 1;
@@ -72,7 +66,8 @@ fn main() {
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let log_file = std::fs::File::create(log_dir.join("nanosnipper.log"))
-        .expect("Failed to create nanosnipper.log");
+        .or_else(|_| std::fs::File::create(std::env::temp_dir().join("nanosnipper.log")))
+        .expect("Failed to create log file in both exe dir and temp dir");
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -233,7 +228,7 @@ fn run() -> Result<()> {
     // Shared state (thread-safe, used by IPC)
     let shared = Arc::new(SharedState {
         config: Mutex::new(config),
-        history,
+        history: history.map(Mutex::new),
         paused: Mutex::new(false),
         main_hwnd: hwnd.0 as isize,
     });
@@ -265,7 +260,13 @@ fn run() -> Result<()> {
     std::thread::Builder::new()
         .name("ipc-server".into())
         .spawn(move || {
-            let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+            let rt = match tokio::runtime::Runtime::new() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    error!("Failed to create tokio runtime: {e}");
+                    return;
+                }
+            };
             rt.block_on(async {
                 if let Err(e) = run_ipc_server(ipc_shared).await {
                     error!("IPC server error: {e}");
@@ -275,7 +276,7 @@ fn run() -> Result<()> {
 
     // Retention cleanup at startup
     if let Some(ref history) = shared.history {
-        history.cleanup_async();
+        history.lock().cleanup_async();
     }
 
     info!("nanosnipper ready — entering message loop");
@@ -448,11 +449,12 @@ fn handle_ipc_message(shared: &SharedState, msg: IpcMessage) -> Option<IpcMessag
         }
         IpcMessage::GetHistory { offset, limit, search } => {
             if let Some(ref history) = shared.history {
-                match history.query(offset, limit, search.as_deref()) {
+                let h = history.lock();
+                match h.query(offset, limit, search.as_deref()) {
                     Ok((entries, total)) => {
                         let thumbnails: Vec<Option<Vec<u8>>> = entries
                             .iter()
-                            .map(|e| history.get_thumbnail(&e.id).ok().flatten())
+                            .map(|e| h.get_thumbnail(&e.id).ok().flatten())
                             .collect();
                         Some(IpcMessage::HistoryData { entries, total, thumbnails })
                     }
@@ -464,7 +466,7 @@ fn handle_ipc_message(shared: &SharedState, msg: IpcMessage) -> Option<IpcMessag
         }
         IpcMessage::DeleteEntry(id) => {
             if let Some(ref history) = shared.history {
-                history.delete_async(id);
+                history.lock().delete_async(id);
             }
             Some(IpcMessage::EntryDeleted(id))
         }
@@ -647,7 +649,7 @@ fn do_fullscreen_capture(state: &Mutex<AppState>) {
             capture_w,
             capture_h,
         );
-        history.save_async(entry, pixels_for_history);
+        history.lock().save_async(entry, pixels_for_history);
     }
 }
 
@@ -665,8 +667,9 @@ fn do_region_capture(state: &Mutex<AppState>) {
     overlay
         .show(CaptureMode::Region, Box::new(move |result| {
             let selection_complete = Instant::now();
-            // SAFETY: state_ptr points to AppState stored via GWLP_USERDATA
-            // which lives for the duration of the program.
+            // SAFETY: state_ptr points to Mutex<AppState> heap-allocated via Box::into_raw
+            // and stored in GWLP_USERDATA. It is freed only in WM_DESTROY, which runs after
+            // the overlay callback completes (overlay is hidden before app teardown).
             let state = unsafe { &*state_ptr };
             match result {
                 snip_overlay::OverlayResult::Region(region) => {
@@ -798,7 +801,7 @@ fn handle_region_selected(
             capture_w,
             capture_h,
         );
-        history.save_async(entry, pixels_for_history);
+        history.lock().save_async(entry, pixels_for_history);
     }
 }
 
@@ -834,7 +837,8 @@ fn save_and_copy(hwnd: HWND, pixels: &ns_common::PixelBuffer) {
             if let Err(e) = save_to_disk_at(&pixels_bg, &path) {
                 error!("Background PNG save failed: {e}");
             } else {
-                info!("PNG saved in {:.1}ms: {}", t0.elapsed().as_secs_f64() * 1000.0, path.display());
+                info!("PNG saved in {:.1}ms: {}", t0.elapsed().as_secs_f64() * 1000.0,
+                    path.file_name().map(|f| f.to_string_lossy()).unwrap_or_default());
             }
         })
         .ok();
@@ -1062,10 +1066,10 @@ unsafe extern "system" fn wnd_proc(
                                 let pixels_for_history = result.pixels.clone();
 
                                 // Phase 6: Pre-render DIB so WM_RENDERFORMAT is instant
-                                // Note: old pre_rendered_dib (if any) was either consumed by
-                                // WM_RENDERFORMAT or will be dropped. Windows takes ownership
-                                // of handles passed to SetClipboardData.
-                                s.pre_rendered_dib = None;
+                                // Free old pre-rendered DIB if WM_RENDERFORMAT never consumed it
+                                if let Some(old) = s.pre_rendered_dib.take() {
+                                    snip_clipboard::free_dib_handle(old);
+                                }
                                 match snip_clipboard::render_dibv5(&result.pixels) {
                                     Ok((handle, render_dur)) => {
                                         info!(
@@ -1089,7 +1093,7 @@ unsafe extern "system" fn wnd_proc(
                                         width,
                                         height,
                                     );
-                                    history.save_async(entry, pixels_for_history);
+                                    history.lock().save_async(entry, pixels_for_history);
                                 }
                             }
                             Err(e) => error!("Deferred readback failed: {e}"),

@@ -193,12 +193,12 @@ impl NsApp {
                     pages::history::Message::OpenEntry(id) => {
                         let id = *id;
                         self.history_state.update(msg);
-                        // Open the capture file in the default viewer
+                        // Open the capture file in the default viewer (explorer avoids shell metachar injection)
                         if let Some(entry) = self.history_state.find_entry(&id) {
                             let path = ns_common::paths::captures_dir().join(&entry.file_path);
                             if path.exists() {
-                                let _ = std::process::Command::new("cmd")
-                                    .args(["/C", "start", "", &path.to_string_lossy()])
+                                let _ = std::process::Command::new("explorer")
+                                    .arg(&path)
                                     .spawn();
                             }
                         }
@@ -254,8 +254,8 @@ impl NsApp {
             Message::RefreshHistory => self.load_history(),
 
             Message::About(pages::about::Message::OpenBitcoinCom) | Message::OpenSponsorLink => {
-                let _ = std::process::Command::new("cmd")
-                    .args(["/C", "start", "", "https://www.bitcoin.com"])
+                let _ = std::process::Command::new("explorer")
+                    .arg("https://www.bitcoin.com")
                     .spawn();
                 Task::none()
             }

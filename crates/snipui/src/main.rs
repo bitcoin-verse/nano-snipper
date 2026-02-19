@@ -43,14 +43,12 @@ fn main() -> iced::Result {
             min_size: Some(iced::Size::new(640.0, 420.0)),
             position: iced::window::Position::Centered,
             visible: false, // Start hidden — shown after first render to avoid white flash
-            icon: Some(
-                iced::window::icon::from_rgba(
+            icon: iced::window::icon::from_rgba(
                     include_bytes!("../../../resources/tray_32x32.rgba").to_vec(),
                     32,
                     32,
                 )
-                .expect("valid icon data"),
-            ),
+                .ok(),
             ..iced::window::Settings::default()
         })
         .default_font(theme::FONT_SEGOE)

@@ -8,7 +8,7 @@ use tracing::{debug, info};
 use windows::Win32::Foundation::*;
 use windows::Win32::System::DataExchange::*;
 use windows::Win32::System::Memory::*;
-use windows::Win32::System::Ole::CF_DIBV5;
+use windows::Win32::System::Ole::{CF_DIBV5, CF_UNICODETEXT};
 use windows::Win32::Graphics::Gdi::*;
 
 /// Build a BITMAPV5HEADER + pixel data HGLOBAL from a PixelBuffer.
@@ -140,8 +140,7 @@ pub fn set_image_and_text(hwnd: HWND, pixels: &PixelBuffer, text: &str) -> Resul
             anyhow::bail!("SetClipboardData (image) failed");
         }
 
-        // CF_UNICODETEXT = 13
-        if SetClipboardData(13, Some(HANDLE(hglobal_txt.0))).is_err() {
+        if SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(hglobal_txt.0))).is_err() {
             GlobalFree(Some(hglobal_txt)).ok();
             CloseClipboard().ok();
             anyhow::bail!("SetClipboardData (text) failed");
@@ -187,6 +186,14 @@ pub fn render_dibv5(pixels: &PixelBuffer) -> Result<(HANDLE, Duration)> {
     Ok((HANDLE(hglobal.0), elapsed))
 }
 
+/// Free a DIB HANDLE that was returned by `render_dibv5` but never consumed
+/// by `SetClipboardData` (i.e., WM_RENDERFORMAT never fired).
+pub fn free_dib_handle(handle: HANDLE) {
+    unsafe {
+        let _ = GlobalFree(Some(HGLOBAL(handle.0)));
+    }
+}
+
 /// Set plain text to the clipboard (for OCR results).
 pub fn set_text(hwnd: HWND, text: &str) -> Result<()> {
     info!("Setting clipboard text: {} chars", text.len());
@@ -209,8 +216,7 @@ pub fn set_text(hwnd: HWND, text: &str) -> Result<()> {
     unsafe {
         OpenClipboard(Some(hwnd))?;
         EmptyClipboard()?;
-        // CF_UNICODETEXT = 13
-        SetClipboardData(13, Some(HANDLE(hglobal.0)))?;
+        SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(hglobal.0)))?;
         CloseClipboard()?;
     }
 

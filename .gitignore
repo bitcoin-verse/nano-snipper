@@ -32,3 +32,6 @@ snipd_log.txt
 # Build artifacts
 *.msi
 installer/Output/
+
+# Audit reports
+/audit

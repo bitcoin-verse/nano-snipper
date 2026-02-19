@@ -61,7 +61,7 @@ function KillProcess(ExeName: string): Boolean;
 var
   ResultCode: Integer;
 begin
-  Exec('taskkill.exe', '/F /IM ' + ExeName, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM ' + ExeName, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Result := True;
 end;
 

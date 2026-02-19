@@ -600,6 +600,11 @@ impl CaptureEngine {
         let data_size = stride * height;
         let mut data = vec![0u8; data_size as usize];
 
+        if mapped.pData.is_null() {
+            unsafe { self.context.Unmap(texture, 0) };
+            anyhow::bail!("Map returned null pData — GPU readback failed");
+        }
+
         unsafe {
             std::ptr::copy_nonoverlapping(
                 mapped.pData as *const u8,
@@ -652,11 +657,11 @@ fn fix_alpha_simd(data: &mut [u8], width: u32, height: u32, stride: u32) {
                     let v = _mm_loadu_si128(p);
                     _mm_storeu_si128(p, _mm_or_si128(v, alpha_mask));
                 }
-                // Handle remaining pixels (< 4 pixels)
+                // Handle remaining pixels (< 4 pixels) — checked indexing for safety
                 let remainder_start = chunks * 16;
                 let mut idx = remainder_start + 3;
                 while idx < total {
-                    *data.get_unchecked_mut(idx) = 255;
+                    data[idx] = 255;
                     idx += 4;
                 }
             } else {
@@ -670,12 +675,12 @@ fn fix_alpha_simd(data: &mut [u8], width: u32, height: u32, stride: u32) {
                         let v = _mm_loadu_si128(p);
                         _mm_storeu_si128(p, _mm_or_si128(v, alpha_mask));
                     }
-                    // Remaining pixels in this row
+                    // Remaining pixels in this row — checked indexing for safety
                     let remainder_start = chunks * 16;
                     let mut idx = row_start + remainder_start + 3;
                     let row_end = row_start + row_bytes;
                     while idx < row_end {
-                        *data.get_unchecked_mut(idx) = 255;
+                        data[idx] = 255;
                         idx += 4;
                     }
                 }

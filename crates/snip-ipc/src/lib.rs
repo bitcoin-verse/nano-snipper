@@ -22,7 +22,7 @@ impl IpcServer {
 
         loop {
             let server = ServerOptions::new()
-                .first_pipe_instance(false)
+                .first_pipe_instance(true)
                 .create(PIPE_NAME)?;
 
             debug!("Waiting for IPC client connection...");
@@ -108,6 +108,10 @@ impl IpcClient {
         let mut len_buf = [0u8; 4];
         pipe.read_exact(&mut len_buf).await?;
         let len = u32::from_le_bytes(len_buf) as usize;
+
+        if len > 10 * 1024 * 1024 {
+            anyhow::bail!("IPC response too large: {len} bytes");
+        }
 
         let mut body = vec![0u8; len];
         pipe.read_exact(&mut body).await?;
