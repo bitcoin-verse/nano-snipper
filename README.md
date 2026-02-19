@@ -18,14 +18,9 @@ cargo build --workspace --release
 
 # Screenshot
 
-<!-- ![Nano Snipper in action](docs/demo.gif) -->
+![Nano Snipper in action](screenshots/ss_1.gif)
 
-
-## Windows Snipping Tool vs Nano Snipper
-
-<!-- | Windows Snipping Tool | Nano Snipper | -->
-<!-- |:-:|:-:| -->
-<!-- | ![Snipping Tool](docs/snipping_tool_demo.gif) | ![Nano Snipper](docs/nano_snipper_demo.gif) | -->
+![Nano Snipper in action](screenshots/ss_2.gif)
 
 
 ## Features
