@@ -35,3 +35,6 @@ installer/Output/
 
 # Audit reports
 /audit
+
+# Content drafts
+/content
