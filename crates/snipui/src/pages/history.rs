@@ -1,6 +1,7 @@
 //! History page: capture list with thumbnails, search, and pagination.
 
 use crate::theme;
+use iced::widget::image::Handle;
 use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
 use iced::{Element, Length};
 use ns_common::history::HistoryEntry;
@@ -16,6 +17,8 @@ pub enum Message {
 pub struct State {
     entries: Vec<HistoryEntry>,
     thumbnails: Vec<Option<Vec<u8>>>,
+    /// Cached image handles so we don't re-create them on every view() call.
+    thumb_handles: Vec<Option<Handle>>,
     total: u32,
     current_page: u32,
     search_query: String,
@@ -27,10 +30,11 @@ impl State {
         Self {
             entries: Vec::new(),
             thumbnails: Vec::new(),
+            thumb_handles: Vec::new(),
             total: 0,
             current_page: 0,
             search_query: String::new(),
-            page_size: 50,
+            page_size: 20,
         }
     }
 
@@ -41,6 +45,11 @@ impl State {
         thumbnails: Vec<Option<Vec<u8>>>,
     ) {
         self.entries = entries;
+        // Build cached handles once, reused across view() calls
+        self.thumb_handles = thumbnails
+            .iter()
+            .map(|t| t.as_ref().map(|data| Handle::from_bytes(data.clone())))
+            .collect();
         self.thumbnails = thumbnails;
         self.total = total;
     }
@@ -55,6 +64,10 @@ impl State {
 
     pub fn page_size(&self) -> u32 {
         self.page_size
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty() && self.total == 0
     }
 
     pub fn search_query(&self) -> Option<String> {
@@ -112,15 +125,14 @@ impl State {
             let mut col = column![].spacing(6);
             for (i, entry) in self.entries.iter().enumerate() {
                 let entry_id = entry.id;
-                let thumb_data = self.thumbnails.get(i).and_then(|t| t.as_deref());
+                let cached_handle = self.thumb_handles.get(i).and_then(|h| h.as_ref());
 
                 // Thumbnail
                 let mut entry_content = row![].spacing(12).align_y(iced::Alignment::Center);
 
-                if let Some(data) = thumb_data {
-                    let handle = iced::widget::image::Handle::from_bytes(data.to_vec());
+                if let Some(handle) = cached_handle {
                     let thumb = container(
-                        iced::widget::image(handle)
+                        iced::widget::image(handle.clone())
                             .width(Length::Fixed(80.0))
                             .height(Length::Fixed(56.0)),
                     )

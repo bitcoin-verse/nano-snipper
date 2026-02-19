@@ -22,6 +22,8 @@ cargo build --workspace --release
 
 ![Nano Snipper in action](screenshots/ss_2.gif)
 
+![Nano Snipper in action](screenshots/ss_3.gif)
+
 
 ## Features
 

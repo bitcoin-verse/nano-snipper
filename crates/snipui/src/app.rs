@@ -137,7 +137,7 @@ impl NsApp {
         }
 
         if self.page == Page::History {
-            subs.push(iced::time::every(std::time::Duration::from_secs(2)).map(|_| Message::RefreshHistory));
+            subs.push(iced::time::every(std::time::Duration::from_secs(30)).map(|_| Message::RefreshHistory));
         }
 
         Subscription::batch(subs)
@@ -262,7 +262,16 @@ impl NsApp {
 
             Message::IpcError(err) => {
                 tracing::error!("IPC error: {err}");
-                Task::none()
+                // Retry history load after a short delay if on History page
+                // (startup may race config + history IPC calls on a single-connection pipe)
+                if self.page == Page::History && self.history_state.is_empty() {
+                    Task::perform(
+                        async { tokio::time::sleep(std::time::Duration::from_millis(500)).await },
+                        |_| Message::RefreshHistory,
+                    )
+                } else {
+                    Task::none()
+                }
             }
         }
     }
