@@ -53,3 +53,13 @@ pub async fn delete_entry(id: uuid::Uuid) -> Result<()> {
         _ => Err(anyhow::anyhow!("Unexpected response")),
     }
 }
+
+/// Delete all history entries.
+pub async fn delete_all_entries() -> Result<()> {
+    let response = snip_ipc::IpcClient::send(&IpcMessage::DeleteAllEntries).await?;
+    match response {
+        IpcMessage::AllEntriesDeleted => Ok(()),
+        IpcMessage::Error(e) => Err(anyhow::anyhow!("Server error: {e}")),
+        _ => Err(anyhow::anyhow!("Unexpected response")),
+    }
+}

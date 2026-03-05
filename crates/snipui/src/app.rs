@@ -29,6 +29,7 @@ pub enum Message {
     ConfigSaved,
     HistoryLoaded(Vec<HistoryEntry>, u32, Vec<Option<Vec<u8>>>),
     EntryDeleted(uuid::Uuid),
+    AllEntriesDeleted,
     IpcError(String),
     HotkeyCaptured(HotkeyCombination),
     OpenSponsorLink,
@@ -204,6 +205,24 @@ impl NsApp {
                         }
                         Task::none()
                     }
+                    pages::history::Message::DeleteAll => {
+                        self.history_state.update(msg);
+                        Task::perform(
+                            async move { ipc_client::delete_all_entries().await },
+                            |result| match result {
+                                Ok(()) => Message::AllEntriesDeleted,
+                                Err(e) => Message::IpcError(format!("Delete all: {e}")),
+                            },
+                        )
+                    }
+                    pages::history::Message::OpenFolder => {
+                        self.history_state.update(msg);
+                        let captures_dir = ns_common::paths::captures_dir();
+                        let _ = std::process::Command::new("explorer")
+                            .arg(&captures_dir)
+                            .spawn();
+                        Task::none()
+                    }
                 }
             }
 
@@ -224,7 +243,10 @@ impl NsApp {
             }
 
             Message::EntryDeleted(_id) => {
-                // Reload history after delete
+                self.load_history()
+            }
+
+            Message::AllEntriesDeleted => {
                 self.load_history()
             }
 

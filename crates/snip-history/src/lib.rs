@@ -18,6 +18,7 @@ enum WriterCommand {
         pixels: PixelBuffer,
     },
     Delete(Uuid),
+    DeleteAll,
     Cleanup,
     Shutdown,
 }
@@ -92,6 +93,13 @@ impl HistoryStore {
     pub fn delete_async(&self, id: Uuid) {
         if let Err(e) = self.writer_tx.send(WriterCommand::Delete(id)) {
             error!("Failed to send delete to history writer: {e}");
+        }
+    }
+
+    /// Delete all history entries.
+    pub fn delete_all_async(&self) {
+        if let Err(e) = self.writer_tx.send(WriterCommand::DeleteAll) {
+            error!("Failed to send delete-all to history writer: {e}");
         }
     }
 
@@ -188,6 +196,11 @@ impl HistoryStore {
                 WriterCommand::Delete(id) => {
                     if let Err(e) = Self::do_delete(&conn, &id) {
                         error!("Failed to delete entry: {e}");
+                    }
+                }
+                WriterCommand::DeleteAll => {
+                    if let Err(e) = Self::do_delete_all(&conn) {
+                        error!("Failed to delete all entries: {e}");
                     }
                 }
                 WriterCommand::Cleanup => {
@@ -299,6 +312,22 @@ impl HistoryStore {
         }
 
         info!("Deleted capture {id}");
+        Ok(())
+    }
+
+    fn do_delete_all(conn: &Connection) -> Result<()> {
+        let paths: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT file_path FROM captures")?;
+            let rows = stmt.query_map([], |row| row.get(0))?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+
+        for path in &paths {
+            safe_remove_in_captures_dir(path);
+        }
+
+        conn.execute("DELETE FROM captures", [])?;
+        info!("Deleted all captures ({} entries)", paths.len());
         Ok(())
     }
 

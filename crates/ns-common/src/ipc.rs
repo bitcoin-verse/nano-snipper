@@ -20,6 +20,8 @@ pub enum IpcMessage {
     },
     /// Delete a history entry.
     DeleteEntry(Uuid),
+    /// Delete all history entries.
+    DeleteAllEntries,
     /// Request nanosnipper to trigger a capture.
     TriggerCapture(crate::CaptureMode),
     /// Pause/resume hotkeys.
@@ -38,6 +40,8 @@ pub enum IpcMessage {
     CaptureCompleted(HistoryEntry),
     /// An entry was deleted.
     EntryDeleted(Uuid),
+    /// All entries were deleted.
+    AllEntriesDeleted,
     /// Error response.
     Error(String),
     /// Acknowledge with no payload.

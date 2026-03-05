@@ -33,6 +33,7 @@ cargo build --workspace --release
 - 9-color palette + 3 thickness presets
 - Undo / redo (supports both draw and move operations)
 - Automatic history with full-resolution PNGs and thumbnail previews
+- Delete all history with one click, or open the captures folder directly
 - Configurable hotkeys, retention policy, and start-on-login
 - System tray integration
 - Single daemon process, low memory footprint (~79 MB idle)

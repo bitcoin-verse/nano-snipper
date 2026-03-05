@@ -12,6 +12,8 @@ pub enum Message {
     LoadPage(u32),
     DeleteEntry(uuid::Uuid),
     OpenEntry(uuid::Uuid),
+    DeleteAll,
+    OpenFolder,
 }
 
 pub struct State {
@@ -89,6 +91,8 @@ impl State {
             }
             Message::DeleteEntry(_id) => {}
             Message::OpenEntry(_id) => {}
+            Message::DeleteAll => {}
+            Message::OpenFolder => {}
         }
     }
 
@@ -101,6 +105,21 @@ impl State {
             .size(14)
             .style(theme::search_input)
             .width(Length::Fill);
+
+        let open_folder_btn = button(text("Open Folder").size(12))
+            .style(theme::ghost_button)
+            .on_press(Message::OpenFolder)
+            .padding([6, 10]);
+
+        let mut toolbar = row![search_bar, open_folder_btn].spacing(8).align_y(iced::Alignment::Center);
+
+        if self.total > 0 {
+            let delete_all_btn = button(text("Delete All").size(12))
+                .style(theme::danger_button)
+                .on_press(Message::DeleteAll)
+                .padding([6, 10]);
+            toolbar = toolbar.push(delete_all_btn);
+        }
 
         // ── Entry list ───────────────────────────────────────────────
 
@@ -229,7 +248,7 @@ impl State {
         // ── Layout ───────────────────────────────────────────────────
 
         let content = column![
-            search_bar,
+            toolbar,
             scrollable(entries_list).height(Length::Fill),
             pagination,
             status,

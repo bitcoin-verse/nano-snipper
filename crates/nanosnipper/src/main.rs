@@ -470,6 +470,12 @@ fn handle_ipc_message(shared: &SharedState, msg: IpcMessage) -> Option<IpcMessag
             }
             Some(IpcMessage::EntryDeleted(id))
         }
+        IpcMessage::DeleteAllEntries => {
+            if let Some(ref history) = shared.history {
+                history.lock().delete_all_async();
+            }
+            Some(IpcMessage::AllEntriesDeleted)
+        }
         IpcMessage::SetPaused(paused) => {
             *shared.paused.lock() = paused;
             info!("Hotkeys {}", if paused { "paused" } else { "resumed" });
