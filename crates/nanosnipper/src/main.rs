@@ -472,7 +472,9 @@ fn handle_ipc_message(shared: &SharedState, msg: IpcMessage) -> Option<IpcMessag
         }
         IpcMessage::DeleteAllEntries => {
             if let Some(ref history) = shared.history {
-                history.lock().delete_all_async();
+                if let Err(e) = history.lock().delete_all() {
+                    return Some(IpcMessage::Error(format!("Delete all: {e}")));
+                }
             }
             Some(IpcMessage::AllEntriesDeleted)
         }
