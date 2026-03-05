@@ -24,6 +24,35 @@ pub struct PendingCapture {
     pub acquire_duration: Duration,
 }
 
+/// RAII guard that releases a DXGI frame when dropped.
+/// Prevents frame leaks when GPU operations fail after acquire_frame().
+struct FrameGuard {
+    dup: IDXGIOutputDuplication,
+    released: bool,
+}
+
+impl FrameGuard {
+    fn new(dup: IDXGIOutputDuplication) -> Self {
+        Self { dup, released: false }
+    }
+
+    /// Explicitly release the frame. Returns the release result.
+    fn release(mut self) -> Result<()> {
+        self.released = true;
+        unsafe { self.dup.ReleaseFrame()? };
+        Ok(())
+    }
+}
+
+impl Drop for FrameGuard {
+    fn drop(&mut self) {
+        if !self.released {
+            tracing::warn!("DXGI frame not explicitly released — releasing in drop (error path)");
+            let _ = unsafe { self.dup.ReleaseFrame() };
+        }
+    }
+}
+
 /// Pre-initialized D3D11 device, created at startup to avoid cold-start latency.
 pub struct CaptureEngine {
     device: ID3D11Device,
@@ -146,6 +175,7 @@ impl CaptureEngine {
     /// Reads pixels from GPU, fixes alpha, releases DXGI frame.
     pub fn complete_readback(&mut self, pending: PendingCapture) -> Result<CaptureResult> {
         debug!("Completing readback for pending capture");
+        let guard = FrameGuard::new(pending.dup);
 
         let t_readback = Instant::now();
         let pixels = self.read_from_texture(&pending.clean_texture, pending.width, pending.height)?;
@@ -162,7 +192,7 @@ impl CaptureEngine {
         }
 
         // Release DXGI frame after Map completes
-        unsafe { pending.dup.ReleaseFrame()? };
+        guard.release()?;
 
         let total = pending.acquire_duration + cpu_readback;
 
@@ -186,6 +216,7 @@ impl CaptureEngine {
 
         let t_acquire = Instant::now();
         let (dup, frame_tex, width, height) = self.acquire_frame()?;
+        let guard = FrameGuard::new(dup);
         let dxgi_acquire = t_acquire.elapsed();
 
         let t_readback = Instant::now();
@@ -203,7 +234,7 @@ impl CaptureEngine {
         }
 
         // Release AFTER Map — pixel data is safely in CPU memory
-        unsafe { dup.ReleaseFrame()? };
+        guard.release()?;
 
         let total = dxgi_acquire + cpu_readback;
 
@@ -230,6 +261,7 @@ impl CaptureEngine {
 
         let t_acquire = Instant::now();
         let (dup, frame_tex, full_w, full_h) = self.acquire_frame()?;
+        let guard = FrameGuard::new(dup);
         let dxgi_acquire = t_acquire.elapsed();
 
         let (pixels, gpu_crop, cpu_readback) = if region.x == 0
@@ -257,7 +289,7 @@ impl CaptureEngine {
         }
 
         // Release AFTER all GPU reads complete
-        unsafe { dup.ReleaseFrame()? };
+        guard.release()?;
 
         let total = dxgi_acquire + gpu_crop.unwrap_or(Duration::ZERO) + cpu_readback;
 
@@ -301,6 +333,7 @@ impl CaptureEngine {
 
         let t_acquire = Instant::now();
         let (dup, frame_tex, _full_w, _full_h) = self.acquire_frame()?;
+        let guard = FrameGuard::new(dup);
         let dxgi_acquire = t_acquire.elapsed();
 
         let t_crop = Instant::now();
@@ -318,7 +351,7 @@ impl CaptureEngine {
         }
 
         // Release AFTER all GPU reads complete
-        unsafe { dup.ReleaseFrame()? };
+        guard.release()?;
 
         let total = dxgi_acquire + gpu_crop;
 

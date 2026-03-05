@@ -416,7 +416,31 @@ impl AnnotationEditor {
 
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_SHOW);
+
+            // SetForegroundWindow has strict restrictions on Windows. When it fails,
+            // the window is visible (SW_SHOW + WS_EX_TOPMOST) but not activated.
+            // Use the AttachThreadInput trick: temporarily attach to the foreground
+            // thread so Windows allows us to take foreground.
+            let fg_hwnd = GetForegroundWindow();
+            let fg_thread = if !fg_hwnd.is_invalid() && fg_hwnd != self.hwnd {
+                let tid = windows::Win32::System::Threading::GetCurrentThreadId();
+                let fg_tid = GetWindowThreadProcessId(fg_hwnd, None);
+                if fg_tid != 0 && fg_tid != tid {
+                    let _ = windows::Win32::System::Threading::AttachThreadInput(tid, fg_tid, true);
+                    Some((tid, fg_tid))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
             let _ = SetForegroundWindow(self.hwnd);
+
+            if let Some((tid, fg_tid)) = fg_thread {
+                let _ = windows::Win32::System::Threading::AttachThreadInput(tid, fg_tid, false);
+            }
+
             let _ = InvalidateRect(Some(self.hwnd), None, false);
         }
 

@@ -645,7 +645,9 @@ fn do_fullscreen_capture(state: &Mutex<AppState>) {
         }
     } else {
         info!("No persistent editor — creating new one");
-        let _ = snip_ui::AnnotationEditor::new(&pixels_for_annotate, callback);
+        if let Err(e) = snip_ui::AnnotationEditor::new(&pixels_for_annotate, callback) {
+            error!("Failed to create fallback annotation editor: {e}");
+        }
     }
 
     if let Some(ref history) = history_arc.history {
@@ -797,7 +799,9 @@ fn handle_region_selected(
         }
     } else {
         info!("No persistent editor — creating new one");
-        let _ = snip_ui::AnnotationEditor::new(&pixels_for_annotate, callback);
+        if let Err(e) = snip_ui::AnnotationEditor::new(&pixels_for_annotate, callback) {
+            error!("Failed to create fallback annotation editor: {e}");
+        }
     }
 
     if let Some(ref history) = history_arc.history {
