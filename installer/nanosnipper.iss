@@ -5,7 +5,7 @@
 #define MyAppName "Nano Snipper"
 #define MyAppVersion "0.1.0"
 #define MyAppPublisher "Nano Snipper"
-#define MyAppURL "https://github.com/user/nanosnipper"
+#define MyAppURL "https://github.com/bitcoin-verse/nano-snipper"
 #define MyAppExeName "nanosnipper.exe"
 #define MySettingsExeName "snipui.exe"
 
