@@ -200,9 +200,32 @@ fn run() -> Result<()> {
         })
         .ok();
 
-    let capture_engine = match snip_capture::CaptureEngine::new() {
-        Ok(e) => { info!("Capture engine initialized"); Some(e) }
-        Err(e) => { error!("Failed to init capture engine: {e}"); None }
+    // Retry capture engine init — during Windows startup, the desktop compositor
+    // and GPU drivers may not be ready yet, causing DXGI enumeration to fail.
+    let capture_engine = {
+        let max_retries = 10;
+        let mut engine = None;
+        for attempt in 0..max_retries {
+            match snip_capture::CaptureEngine::new() {
+                Ok(e) => {
+                    info!("Capture engine initialized (attempt {})", attempt + 1);
+                    engine = Some(e);
+                    break;
+                }
+                Err(e) => {
+                    if attempt + 1 < max_retries {
+                        warn!(
+                            "Capture engine init failed (attempt {}/{}): {e} — retrying in {}s",
+                            attempt + 1, max_retries, attempt + 1
+                        );
+                        std::thread::sleep(std::time::Duration::from_secs((attempt + 1) as u64));
+                    } else {
+                        error!("Capture engine init failed after {max_retries} attempts: {e}");
+                    }
+                }
+            }
+        }
+        engine
     };
 
     let overlay = match snip_overlay::Overlay::new() {
